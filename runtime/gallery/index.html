@@ -30,7 +30,7 @@
   .card img { width: 56px; height: 56px; border-radius: 14px; object-fit: cover; background: var(--soft); }
   .card .name { font-weight: 650; font-size: 15px; }
   .card .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
-  .card .desc { color: var(--muted); font-size: 12.5px; margin-top: 6px; max-height: 3.6em; overflow: hidden; }
+  .card .desc { color: var(--muted); font-size: 12.5px; margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .card .actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
   .card .actions button { padding: 5px 9px; font-size: 12.5px; }
   .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--soft); color: var(--muted); margin-left: 6px; vertical-align: middle; }
