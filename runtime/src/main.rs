@@ -21,6 +21,8 @@ use manifest::{Manifest, Tier};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+#[cfg(target_os = "macos")]
+use tauri::menu::Submenu;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
@@ -534,6 +536,21 @@ fn setup_app(app: &mut tauri::App, m: Manifest, dir: PathBuf, dev: bool) -> taur
     }
     let hide_on_close = m.tray.enabled && m.tray.hide_on_close;
     let window = wb.build()?;
+
+    // macOS: a Help menu with "About deskhatch", so the runtime is discoverable from any app.
+    #[cfg(target_os = "macos")]
+    {
+        let menu = Menu::default(app.handle())?;
+        let about_item = MenuItem::with_id(app, "about-deskhatch", "About deskhatch", true, None::<&str>)?;
+        let help = Submenu::with_items(app, "Help", true, &[&about_item])?;
+        menu.append(&help)?;
+        app.set_menu(menu)?;
+        app.on_menu_event(|app, ev| {
+            if ev.id.as_ref() == "about-deskhatch" {
+                show_about(app, app.state::<AppCtx>().manifest.as_ref());
+            }
+        });
+    }
     if let Some(js) = TEST_EVAL.get() {
         schedule_test_eval(&window, js);
     }

@@ -230,8 +230,23 @@ pub fn export(id: &str, out_dir: &Path) -> Result<PathBuf> {
             zw.write_all(&buf)?;
         }
     }
+    // A note for whoever receives the file without deskhatch installed.
+    zw.start_file("README.txt", opts)?;
+    zw.write_all(share_note(&m).as_bytes())?;
     zw.finish()?;
     Ok(out)
+}
+
+/// Text that travels with a shared package and is shown next to the Share button.
+pub fn share_note(m: &Manifest) -> String {
+    format!(
+        "{name} is a deskhatch app: a small desktop app made from HTML.\n\n\
+To open it, install deskhatch once (free, open source, macOS and Linux):\n\n\
+    npx deskhatch install {id}.hatch\n\n\
+or double-click the .hatch file after deskhatch is installed. More: https://github.com/beskvladimir-create/deskhatch\n",
+        name = m.name,
+        id = m.id
+    )
 }
 
 // ---------- launchers ----------

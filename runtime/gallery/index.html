@@ -126,6 +126,16 @@
   </form>
 </dialog>
 
+<dialog id="dlgShare">
+  <form method="dialog">
+    <h2>Share <span id="shareName"></span></h2>
+    <div class="hint">Saved to <span class="tag" id="sharePath"></span>. Send the file together with this note, so the other person knows how to open it:</div>
+    <textarea id="shareNote" readonly style="min-height:150px"></textarea>
+    <div class="status" id="shareStatus"></div>
+    <div class="row"><button value="cancel">Close</button><button type="button" id="shareCopy">Copy note</button></div>
+  </form>
+</dialog>
+
 <script>
   const $ = (s) => document.querySelector(s);
   const g = () => hatch._gallery;
@@ -155,7 +165,7 @@
         const act = ev.target.dataset.act; if (!act) return;
         try {
           if (act === 'open') await g().open(a.id);
-          if (act === 'share') { const p = await g().share(a.id); toast(`Saved ${p}`); }
+          if (act === 'share') { const r = await g().share(a.id); showShare(a, r); }
           if (act === 'launcher') { await g().launcher(a.id); toast(a.launcher ? `${a.name} is in Applications` : `${a.name} added to Applications`); refresh(); }
           if (act === 'reveal') await g().reveal(a.id);
           if (act === 'uninstall') {
@@ -246,6 +256,17 @@
     catch (err) { st.className = 'status err'; st.textContent = String(err); }
   };
   function T_info() { return window.__TAURI__.core.invoke('app_info').then((i) => { hatch.app = i; return i; }); }
+
+  function showShare(a, r) {
+    $('#shareName').textContent = a.name; $('#sharePath').textContent = r.path; $('#shareNote').value = r.note; $('#shareStatus').textContent = '';
+    $('#dlgShare').showModal();
+  }
+  $('#shareCopy').onclick = async () => {
+    const ta = $('#shareNote'); let ok = false;
+    try { await navigator.clipboard.writeText(ta.value); ok = true; } catch (e) {}
+    if (!ok) { ta.focus(); ta.select(); try { ok = document.execCommand('copy'); } catch (e) {} }
+    $('#shareStatus').className = ok ? 'status ok' : 'status err'; $('#shareStatus').textContent = ok ? 'Copied.' : 'Select the text and copy it manually.';
+  };
 
   hatch.on('refresh', refresh);
   refresh(); showLlm();

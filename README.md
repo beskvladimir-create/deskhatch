@@ -13,6 +13,15 @@ npx deskhatch new "a pomodoro timer with a tray icon and a daily log"   # your m
   <img src="docs/img/gallery-macos.png" width="720" alt="The deskhatch gallery on macOS">
 </p>
 
+## What you get
+
+- **Your one-off AI pages become real tools.** The calculator, habit tracker or timer that ChatGPT or Claude wrote for you stops living in a browser tab. One command, and it has an icon in the dock, a window, notifications and a hotkey.
+- **Private automation without code or cloud.** "Summarise every contract in this folder" as an app that talks to Ollama on your machine and sees only the folder you picked. Nothing leaves the computer.
+- **Apps you can hand to someone.** Export a `.hatch` file, send it, the other person double-clicks it. No store, no account, no build.
+- **Linux, and no sign-in.** The only version of this idea that runs there.
+
+Not for you if a browser tab is enough, or if you would rather wire up Tauri or Electron yourself.
+
 ## Why
 
 | | Claude "Install as app" | **deskhatch** |
@@ -129,7 +138,13 @@ v0.2. The macOS runtime is signed with a Developer ID certificate and notarised 
 - Streaming replies from `hatch.llm.chat` ([#3](https://github.com/beskvladimir-create/deskhatch/issues/3)).
 - Importing a Claude artifact straight from its share link ([#4](https://github.com/beskvladimir-create/deskhatch/issues/4)).
 
-Issues and PRs welcome. If you built something with it, add it to [docs/showcase.md](docs/showcase.md).
+Issues and PRs welcome.
+Built something with it? Add it to [docs/showcase.md](docs/showcase.md) and put the badge in your README:
+
+```markdown
+[![Made with deskhatch](https://raw.githubusercontent.com/beskvladimir-create/deskhatch/main/docs/badge.svg)](https://github.com/beskvladimir-create/deskhatch)
+```
+
 
 ## Build from source
 

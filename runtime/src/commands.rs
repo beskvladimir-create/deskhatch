@@ -374,12 +374,19 @@ pub async fn gallery_import(app: AppHandle, window: Window) -> R<Option<String>>
 }
 
 #[tauri::command]
-pub fn gallery_share(window: Window, id: String) -> R<String> {
+pub fn gallery_share(window: Window, id: String) -> R<ShareResult> {
     gallery_only(&window)?;
     let out = dirs::download_dir().unwrap_or_else(home);
     let p = packages::export(&id, &out).map_err(|e| e.to_string())?;
     let _ = tauri_plugin_opener::reveal_item_in_dir(&p);
-    Ok(p.to_string_lossy().to_string())
+    let m = Manifest::load(&store::app_dir(&id)).map_err(|e| e.to_string())?;
+    Ok(ShareResult { path: p.to_string_lossy().to_string(), note: packages::share_note(&m) })
+}
+
+#[derive(Serialize)]
+pub struct ShareResult {
+    pub path: String,
+    pub note: String,
 }
 
 #[tauri::command]
