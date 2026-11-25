@@ -70,7 +70,7 @@ npx deskhatch install hello.html           # a bare HTML file
 npx deskhatch install friend.hatch         # a package someone sent you
 ```
 
-Or grab the runtime from [Releases](https://github.com/beskvladimir-create/deskhatch/releases) and drop `.hatch` files on it.
+Or grab the runtime from [Releases](https://github.com/beskvladimir-create/deskhatch/releases) and drop `.hatch` files on it. Linux: the `npx` wrapper uses the AppImage (needs `libfuse2` on Ubuntu 22.04+; without it the AppImage self-extracts, slower); a `.deb` is in Releases too.
 
 ### Pick a model
 

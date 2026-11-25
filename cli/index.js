@@ -131,12 +131,16 @@ async function main() {
     default: fwd = args;
   }
 
+  const env = { ...process.env };
+  if (process.platform === 'linux' && !fs.existsSync('/dev/fuse') && !env.APPIMAGE_EXTRACT_AND_RUN) {
+    env.APPIMAGE_EXTRACT_AND_RUN = '1'; // no FUSE here (containers, some distros): let the AppImage self-extract
+  }
   if (detach) {
-    const child = spawn(bin, fwd, { detached: true, stdio: 'ignore' });
+    const child = spawn(bin, fwd, { detached: true, stdio: 'ignore', env });
     child.unref();
     return;
   }
-  const child = spawn(bin, fwd, { stdio: 'inherit' });
+  const child = spawn(bin, fwd, { stdio: 'inherit', env });
   child.on('exit', (code) => process.exit(code ?? 0));
 }
 
