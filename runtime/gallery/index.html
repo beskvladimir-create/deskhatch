@@ -41,6 +41,10 @@
   footer a { color: inherit; }
   dialog { border: 1px solid var(--line); border-radius: 16px; background: var(--card); color: var(--fg); padding: 0; width: min(560px, 92vw); box-shadow: 0 30px 80px rgba(0,0,0,.25); }
   dialog::backdrop { background: rgba(0,0,0,.35); }
+  .toast { position: fixed; left: 50%; bottom: 56px; transform: translateX(-50%); z-index: 20;
+    background: var(--fg); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 13.5px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.25); max-width: 78%; text-align: center; }
+  .toast.err { background: var(--danger); color: #fff; }
   dialog form { padding: 20px; display: grid; gap: 12px; }
   dialog h2 { margin: 0 0 4px; font-size: 16px; }
   label { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
@@ -71,6 +75,7 @@
     <p class="hint">A ready app folder is installed by picking its <code>app.json</code>.<br>From a terminal: <code>deskhatch install page.html</code></p>
   </div>
 </main>
+<div id="toast" class="toast" hidden></div>
 <footer>
   <span>Made with deskhatch</span>
   <a href="#" id="lnkRepo">github.com/beskvladimir-create/deskhatch</a>
@@ -141,7 +146,7 @@
         </div>
         <div class="actions">
           <button class="primary" data-act="open">Open</button>
-          <button data-act="launcher" title="Create an app icon in Applications / the app menu">${a.launcher ? 'Recreate icon' : 'Add to Applications'}</button>
+          <button data-act="launcher" title="Create the app icon and show it in Applications / the app menu">${a.launcher ? 'Show in Applications' : 'Add to Applications'}</button>
           <button data-act="share" title="Pack into a .hatch file in Downloads">Share .hatch</button>
           <button data-act="reveal" title="Show the app folder">Files</button>
           <button class="danger" data-act="uninstall">Remove</button>
@@ -151,7 +156,7 @@
         try {
           if (act === 'open') await g().open(a.id);
           if (act === 'share') { const p = await g().share(a.id); toast(`Saved ${p}`); }
-          if (act === 'launcher') { const p = await g().launcher(a.id); toast(`Created ${p}`); refresh(); }
+          if (act === 'launcher') { await g().launcher(a.id); toast(a.launcher ? `${a.name} is in Applications` : `${a.name} added to Applications`); refresh(); }
           if (act === 'reveal') await g().reveal(a.id);
           if (act === 'uninstall') {
             const b = ev.target;
@@ -167,8 +172,12 @@
   function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   let toastT;
   function toast(msg, err) {
-    const v = $('#version'); v.textContent = msg; v.style.color = err ? 'var(--danger)' : '';
-    clearTimeout(toastT); toastT = setTimeout(showVersion, 6000);
+    const t = $('#toast');
+    t.textContent = msg;
+    t.classList.toggle('err', !!err);
+    t.hidden = false;
+    clearTimeout(toastT);
+    toastT = setTimeout(() => { t.hidden = true; }, 5000);
   }
   function showVersion() { const v = $('#version'); v.style.color = ''; v.textContent = hatch.app ? `runtime ${hatch.app.runtime} · ${hatch.app.platform}` : ''; }
 

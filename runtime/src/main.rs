@@ -120,6 +120,7 @@ fn main() {
             let m = packages::import(Path::new(&src), name.as_deref()).unwrap_or_else(|e| fatal(&e.to_string()));
             println!("installed {} ({}) -> {}", m.name, m.id, store::app_dir(&m.id).display());
             if !has(&args, "--no-launcher") {
+                let _ = packages::ensure_gallery_launcher();
                 let standalone = has(&args, "--standalone");
                 match packages::create_launcher_for(&m, standalone) {
                     Ok(p) => println!(
@@ -170,6 +171,10 @@ fn main() {
             }
         }
         Some("relink") => {
+            match packages::create_gallery_launcher() {
+                Ok(p) => println!("{:<24} {}", "deskhatch", p.display()),
+                Err(e) => eprintln!("deskhatch: {e}"),
+            }
             for a in packages::list() {
                 match Manifest::load(&store::app_dir(&a.id)) {
                     Ok(m) => {
@@ -618,6 +623,10 @@ fn setup_app(app: &mut tauri::App, m: Manifest, dir: PathBuf, dev: bool) -> taur
 }
 
 fn setup_gallery(app: &mut tauri::App) -> tauri::Result<()> {
+    // Without this the gallery could only be opened from a terminal.
+    if let Err(e) = packages::ensure_gallery_launcher() {
+        eprintln!("deskhatch: could not put deskhatch in Applications: {e}");
+    }
     let w = WebviewWindowBuilder::new(app, "gallery", WebviewUrl::CustomProtocol("hatch://localhost/".parse().unwrap()))
         .title("deskhatch")
         .inner_size(960.0, 680.0)

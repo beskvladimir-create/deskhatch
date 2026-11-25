@@ -183,8 +183,27 @@ test('a standalone bundle gets its own name, identifier, icon and app id', () =>
   }
 }, MAC);
 
+// Without this there is no way to open the gallery except a terminal.
+test('deskhatch itself gets an icon next to the apps', () => {
+  if (MAC) {
+    const bundle = path.join(home, 'Applications', 'deskhatch.app');
+    if (!fs.existsSync(bundle)) throw new Error('deskhatch.app was not created');
+    const p = plist(bundle);
+    if (p.CFBundleName !== 'deskhatch') throw new Error(`CFBundleName is ${p.CFBundleName}`);
+    if (p.CFBundleIdentifier !== 'tech.besk.deskhatch.gallery') throw new Error(`id is ${p.CFBundleIdentifier}`);
+    const script = fs.readFileSync(path.join(bundle, 'Contents', 'MacOS', 'launch'), 'utf8');
+    if (/--app/.test(script)) throw new Error(`the gallery launcher starts an app: ${script}`);
+  } else {
+    const entry = path.join(home, '.local', 'share', 'applications', 'deskhatch.desktop');
+    if (!fs.existsSync(entry)) throw new Error('deskhatch.desktop was not created');
+    const d = fs.readFileSync(entry, 'utf8');
+    if (/--app/.test(d)) throw new Error(`the gallery entry starts an app:\n${d}`);
+  }
+});
+
 test('relink keeps each launcher in the mode it had', () => {
   const out = ok(sh(['relink']), 'relink');
+  if (!/^deskhatch\s/m.test(out)) throw new Error(`relink did not rebuild deskhatch's own icon: ${out}`);
   if (!/thinapp\s/.test(out)) throw new Error(`thin app missing from relink: ${out}`);
   if (MAC && !/soloapp.*\(standalone\)/.test(out)) throw new Error(`standalone not preserved: ${out}`);
   if (/thinapp.*\(standalone\)/.test(out)) throw new Error(`thin app was upgraded behind our back: ${out}`);

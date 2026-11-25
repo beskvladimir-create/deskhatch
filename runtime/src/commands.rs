@@ -389,6 +389,10 @@ pub fn gallery_launcher(window: Window, id: String) -> R<String> {
     // Keep whatever kind of launcher this app already has instead of silently downgrading it.
     let standalone = packages::launcher_is_standalone(&m);
     let p = packages::create_launcher_for(&m, standalone).map_err(|e| e.to_string())?;
+    // Rebuilding an icon that was already there looks like nothing happened, so show it.
+    if std::env::var_os("DESKHATCH_TEST").is_none() {
+        let _ = tauri_plugin_opener::reveal_item_in_dir(&p);
+    }
     Ok(p.to_string_lossy().to_string())
 }
 

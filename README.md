@@ -10,7 +10,7 @@ npx deskhatch new "a pomodoro timer with a tray icon and a daily log"   # your m
 ```
 
 <p align="center">
-  <img src="docs/img/gallery-linux.png" width="720" alt="deskhatch gallery">
+  <img src="docs/img/gallery-macos.png" width="720" alt="The deskhatch gallery on macOS">
 </p>
 
 ## Why
@@ -116,8 +116,8 @@ npx deskhatch export my-app                # → my-app.hatch to share
 | [`examples/hello.html`](examples/hello.html) | `web` | a bare HTML file, to show that nothing else is needed |
 
 <p align="center">
-  <img src="docs/img/pomodoro-linux.png" width="300" alt="Pomodoro example">
-  <img src="docs/img/ask-linux.png" width="360" alt="Ask example">
+  <img src="docs/img/pomodoro-macos.png" width="280" alt="Pomodoro example on macOS">
+  <img src="docs/img/ask-linux.png" width="360" alt="Ask example on Linux">
 </p>
 
 ## Status

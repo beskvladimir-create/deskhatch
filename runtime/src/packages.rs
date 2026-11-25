@@ -382,6 +382,110 @@ fn standalone_launcher(m: &Manifest) -> Result<PathBuf> {
     create_launcher(m)
 }
 
+/// Where the launcher for deskhatch itself lives.
+pub fn gallery_launcher_path() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(dirs::home_dir()?.join("Applications").join("deskhatch.app"))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Some(
+            dirs::data_local_dir()?
+                .join("applications")
+                .join("deskhatch.desktop"),
+        )
+    }
+    #[cfg(target_os = "windows")]
+    {
+        None
+    }
+}
+
+/// An icon for deskhatch itself, so the gallery can be opened without a terminal. Created when
+/// it is missing; a user who deleted it on purpose does not get it back behind their back.
+pub fn ensure_gallery_launcher() -> Result<Option<PathBuf>> {
+    let Some(target) = gallery_launcher_path() else { return Ok(None) };
+    if target.exists() {
+        return Ok(Some(target));
+    }
+    create_gallery_launcher().map(Some)
+}
+
+/// Build (or rebuild) the launcher for deskhatch itself.
+pub fn create_gallery_launcher() -> Result<PathBuf> {
+    let exe = crate::self_exe()?;
+    let target = gallery_launcher_path()
+        .ok_or_else(|| PkgError::Other("launchers are not supported on this OS yet".into()))?;
+
+    #[cfg(target_os = "macos")]
+    {
+        if target.exists() {
+            fs::remove_dir_all(&target)?;
+        }
+        let contents = target.join("Contents");
+        fs::create_dir_all(contents.join("MacOS"))?;
+        fs::create_dir_all(contents.join("Resources"))?;
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>deskhatch</string>
+  <key>CFBundleDisplayName</key><string>deskhatch</string>
+  <key>CFBundleIdentifier</key><string>tech.besk.deskhatch.gallery</string>
+  <key>CFBundleVersion</key><string>{version}</string>
+  <key>CFBundleShortVersionString</key><string>{version}</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleExecutable</key><string>launch</string>
+  <key>CFBundleIconFile</key><string>app.icns</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>LSUIElement</key><false/>
+</dict>
+</plist>
+"#,
+            version = env!("CARGO_PKG_VERSION"),
+        );
+        fs::write(contents.join("Info.plist"), plist)?;
+        // No arguments: the runtime opens the gallery.
+        let script = format!("#!/bin/sh\nexec {} \"$@\"\n", shell_quote(&exe.to_string_lossy()));
+        let launch = contents.join("MacOS").join("launch");
+        fs::write(&launch, script)?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&launch, fs::Permissions::from_mode(0o755))?;
+        }
+        // The runtime bundle carries deskhatch's own icon; reuse it.
+        if let Some(src) = exe.parent().and_then(|p| p.parent()).map(|c| c.join("Resources").join("icon.icns")) {
+            if src.exists() {
+                let _ = fs::copy(&src, contents.join("Resources").join("app.icns"));
+            }
+        }
+        let _ = std::process::Command::new("touch").arg(&target).status();
+        return Ok(target);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let desktop = format!(
+            "[Desktop Entry]\nType=Application\nName=deskhatch\nComment=Turn any HTML into a real desktop app\nExec={exe}\nIcon=application-x-executable\nTerminal=false\nCategories=Utility;\nStartupWMClass=deskhatch\n",
+            exe = shell_quote(&exe.to_string_lossy()),
+        );
+        fs::write(&target, desktop)?;
+        return Ok(target);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = exe;
+        Err(PkgError::Other("launchers are not supported on this OS yet".into()))
+    }
+}
+
 /// Create a launcher (dock/menu icon) that starts this runtime with `--app <id>`.
 pub fn create_launcher(m: &Manifest) -> Result<PathBuf> {
     let exe = crate::self_exe()?;
