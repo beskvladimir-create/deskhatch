@@ -1,0 +1,45 @@
+[package]
+name = "deskhatch"
+version = "0.1.0"
+description = "deskhatch runtime: turns an HTML app package into a real desktop app"
+authors = ["Vladimir Beskorovainyi <admin@besk.tech>"]
+license = "MIT"
+repository = "https://github.com/beskvladimir-create/deskhatch"
+edition = "2021"
+rust-version = "1.77"
+
+[[bin]]
+name = "deskhatch"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-notification = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+dirs = "5"
+thiserror = "1"
+mime_guess = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder"] }
+objc2-foundation = { version = "0.3", features = ["NSData"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
+panic = "abort"

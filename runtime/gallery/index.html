@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>deskhatch</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --fg: #1b1b1b; --muted: #6b6b66; --card: #ffffff; --line: #e4e2db;
+    --accent: #c2410c; --accent-fg: #fff; --ok: #15803d; --danger: #b91c1c; --soft: #f1efe8;
+    --font: -apple-system, "SF Pro Text", "Segoe UI", Inter, Roboto, Ubuntu, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151515; --fg: #ececec; --muted: #9a9a94; --card: #1f1f1f; --line: #2d2d2d; --soft: #262626; --accent: #f97316; --accent-fg: #1b1b1b; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--font); }
+  body { display: grid; grid-template-rows: auto 1fr auto; }
+  header { display: flex; align-items: center; gap: 14px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--card); }
+  header h1 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: .2px; }
+  header .spacer { flex: 1; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--fg); padding: 7px 12px; border-radius: 8px; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; font-weight: 600; }
+  button.danger { color: var(--danger); }
+  button:disabled { opacity: .5; cursor: default; }
+  main { padding: 20px; overflow: auto; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: grid; grid-template-columns: 56px 1fr; gap: 12px; }
+  .card img { width: 56px; height: 56px; border-radius: 14px; object-fit: cover; background: var(--soft); }
+  .card .name { font-weight: 650; font-size: 15px; }
+  .card .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .card .desc { color: var(--muted); font-size: 12.5px; margin-top: 6px; max-height: 3.6em; overflow: hidden; }
+  .card .actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .card .actions button { padding: 5px 9px; font-size: 12.5px; }
+  .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--soft); color: var(--muted); margin-left: 6px; vertical-align: middle; }
+  .badge.full { color: var(--danger); } .badge.desktop { color: var(--ok); }
+  .empty { text-align: center; color: var(--muted); padding: 60px 20px; }
+  .empty code { font-family: var(--mono); background: var(--soft); padding: 2px 6px; border-radius: 6px; }
+  footer { padding: 10px 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; display: flex; gap: 14px; align-items: center; }
+  footer a { color: inherit; }
+  dialog { border: 1px solid var(--line); border-radius: 16px; background: var(--card); color: var(--fg); padding: 0; width: min(560px, 92vw); box-shadow: 0 30px 80px rgba(0,0,0,.25); }
+  dialog::backdrop { background: rgba(0,0,0,.35); }
+  dialog form { padding: 20px; display: grid; gap: 12px; }
+  dialog h2 { margin: 0 0 4px; font-size: 16px; }
+  label { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
+  input, select, textarea { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); width: 100%; }
+  textarea { min-height: 110px; resize: vertical; }
+  .row { display: flex; gap: 8px; justify-content: flex-end; }
+  .hint { font-size: 12px; color: var(--muted); }
+  .status { font-size: 12.5px; color: var(--muted); min-height: 1.4em; }
+  .status.err { color: var(--danger); }
+  .status.ok { color: var(--ok); }
+  .tag { font-family: var(--mono); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>deskhatch</h1>
+  <span class="hint" id="llmline">…</span>
+  <div class="spacer"></div>
+  <button id="btnSettings">Model &amp; keys</button>
+  <button id="btnImport">Install from file…</button>
+  <button class="primary" id="btnNew">New app from a prompt</button>
+</header>
+<main>
+  <div id="list" class="grid"></div>
+  <div id="empty" class="empty" hidden>
+    <p>No apps yet.</p>
+    <p>Drop an <code>index.html</code> from Claude, ChatGPT or your editor via <b>Install from file…</b>,<br>or describe one in <b>New app from a prompt</b>.</p>
+    <p class="hint">From a terminal: <code>deskhatch install page.html</code></p>
+  </div>
+</main>
+<footer>
+  <span>Made with deskhatch</span>
+  <a href="#" id="lnkRepo">github.com/beskvladimir-create/deskhatch</a>
+  <span class="spacer" style="flex:1"></span>
+  <span id="version"></span>
+</footer>
+
+<dialog id="dlgNew">
+  <form method="dialog">
+    <h2>New app from a prompt</h2>
+    <label>What should it do?
+      <textarea id="newPrompt" placeholder="A pomodoro timer with 25/5 cycles, a big countdown, a daily session log and a notification when a session ends."></textarea>
+    </label>
+    <label>Name (optional) <input id="newName" placeholder="Pomodoro"></label>
+    <label>Permissions
+      <select id="newTier">
+        <option value="web">web — no OS access (safest)</option>
+        <option value="desktop">desktop — notifications, tray, hotkeys, folders you pick</option>
+        <option value="full">full — plus files anywhere in your home folder</option>
+      </select>
+    </label>
+    <div class="status" id="newStatus"></div>
+    <div class="row"><button value="cancel">Cancel</button><button class="primary" id="newGo" value="ok">Generate &amp; install</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlgSettings">
+  <form method="dialog">
+    <h2>Model &amp; keys</h2>
+    <label>Provider
+      <select id="cfgProvider">
+        <option value="ollama">Ollama (local)</option>
+        <option value="lmstudio">LM Studio (local)</option>
+        <option value="llamacpp">llama.cpp server (local)</option>
+        <option value="openai">OpenAI</option>
+        <option value="openrouter">OpenRouter</option>
+        <option value="groq">Groq</option>
+        <option value="mistral">Mistral</option>
+        <option value="deepseek">DeepSeek</option>
+        <option value="custom">Custom OpenAI-compatible</option>
+      </select>
+    </label>
+    <label>Endpoint (leave empty for the provider default) <input id="cfgEndpoint" placeholder="http://localhost:11434/v1"></label>
+    <label>Model <input id="cfgModel" placeholder="qwen2.5-coder:7b"></label>
+    <label>API key (stored in the OS keychain; leave empty to keep the current one) <input id="cfgKey" type="password" autocomplete="off"></label>
+    <div class="status" id="cfgStatus"></div>
+    <div class="row"><button value="cancel">Cancel</button><button id="cfgTest" type="button">Test</button><button class="primary" value="ok">Save</button></div>
+  </form>
+</dialog>
+
+<script>
+  const $ = (s) => document.querySelector(s);
+  const g = () => hatch._gallery;
+  let apps = [];
+
+  async function refresh() {
+    try { apps = await g().list(); } catch (e) { apps = []; }
+    const list = $('#list'); list.innerHTML = '';
+    $('#empty').hidden = apps.length > 0;
+    for (const a of apps) {
+      const el = document.createElement('div'); el.className = 'card';
+      el.innerHTML = `
+        <img src="hatch://localhost/icon/${a.id}" alt="" onerror="this.style.visibility='hidden'">
+        <div>
+          <div class="name">${esc(a.name)}<span class="badge ${a.permissions}">${a.permissions}</span></div>
+          <div class="meta"><span class="tag">${esc(a.id)}</span> · v${esc(a.version)}${a.launcher ? ' · in Applications' : ''}</div>
+          <div class="desc">${esc(a.description || '')}</div>
+        </div>
+        <div class="actions">
+          <button class="primary" data-act="open">Open</button>
+          <button data-act="launcher" title="Create an app icon in Applications / the app menu">${a.launcher ? 'Recreate icon' : 'Add to Applications'}</button>
+          <button data-act="share" title="Pack into a .hatch file in Downloads">Share .hatch</button>
+          <button data-act="reveal" title="Show the app folder">Files</button>
+          <button class="danger" data-act="uninstall">Remove</button>
+        </div>`;
+      el.addEventListener('click', async (ev) => {
+        const act = ev.target.dataset.act; if (!act) return;
+        try {
+          if (act === 'open') await g().open(a.id);
+          if (act === 'share') { const p = await g().share(a.id); toast(`Saved ${p}`); }
+          if (act === 'launcher') { const p = await g().launcher(a.id); toast(`Created ${p}`); refresh(); }
+          if (act === 'reveal') await g().reveal(a.id);
+          if (act === 'uninstall') {
+            const b = ev.target;
+            if (b.dataset.armed) { await g().uninstall(a.id); refresh(); }
+            else { b.dataset.armed = '1'; b.textContent = 'Really remove?'; setTimeout(() => { delete b.dataset.armed; b.textContent = 'Remove'; }, 4000); }
+          }
+        } catch (e) { toast(String(e), true); }
+      });
+      list.appendChild(el);
+    }
+  }
+
+  function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  let toastT;
+  function toast(msg, err) {
+    const v = $('#version'); v.textContent = msg; v.style.color = err ? 'var(--danger)' : '';
+    clearTimeout(toastT); toastT = setTimeout(showVersion, 6000);
+  }
+  function showVersion() { const v = $('#version'); v.style.color = ''; v.textContent = hatch.app ? `runtime ${hatch.app.runtime} · ${hatch.app.platform}` : ''; }
+
+  async function showLlm() {
+    const info = await hatch.ready;
+    if (!info) return;
+    const l = info.llm;
+    $('#llmline').textContent = `${l.provider} · ${l.model || 'no model'}${l.has_key ? '' : (l.provider === 'ollama' || l.endpoint.includes('localhost') ? '' : ' · no key')}`;
+    showVersion();
+  }
+
+  $('#btnImport').onclick = async () => { try { const id = await g().import(); if (id) { toast(`Installed ${id}`); refresh(); } } catch (e) { toast(String(e), true); } };
+  $('#lnkRepo').onclick = (e) => { e.preventDefault(); hatch.openUrl('https://github.com/beskvladimir-create/deskhatch').catch(() => {}); };
+
+  // New app
+  $('#btnNew').onclick = () => { $('#newStatus').textContent = ''; $('#dlgNew').showModal(); };
+  $('#dlgNew form').addEventListener('submit', async (e) => {
+    if (e.submitter && e.submitter.value === 'cancel') return;
+    e.preventDefault();
+    const prompt = $('#newPrompt').value.trim(); if (!prompt) return;
+    const st = $('#newStatus'); st.className = 'status'; st.textContent = 'Asking the model… this takes 20–120 s depending on the model.';
+    $('#newGo').disabled = true;
+    try {
+      const id = await g().create(prompt, $('#newName').value.trim(), $('#newTier').value);
+      st.className = 'status ok'; st.textContent = `Installed ${id}. Opening…`;
+      await refresh(); await g().open(id);
+      $('#dlgNew').close();
+    } catch (err) { st.className = 'status err'; st.textContent = String(err); }
+    finally { $('#newGo').disabled = false; }
+  });
+
+  // Settings
+  $('#btnSettings').onclick = async () => {
+    const c = await g().configGet();
+    const prov = c.provider || 'ollama';
+    $('#cfgProvider').value = [...$('#cfgProvider').options].some(o => o.value === prov) ? prov : 'custom';
+    const pc = (c.providers || {})[prov] || {};
+    $('#cfgEndpoint').value = pc.endpoint || '';
+    $('#cfgModel').value = pc.model || c.model || '';
+    $('#cfgKey').value = '';
+    $('#cfgStatus').textContent = (await g().keyHas(prov)) ? 'A key is stored for this provider.' : '';
+    $('#dlgSettings').showModal();
+  };
+  $('#cfgProvider').onchange = async () => {
+    const c = await g().configGet(); const prov = $('#cfgProvider').value; const pc = (c.providers || {})[prov] || {};
+    $('#cfgEndpoint').value = pc.endpoint || ''; $('#cfgModel').value = pc.model || '';
+    $('#cfgStatus').textContent = (await g().keyHas(prov)) ? 'A key is stored for this provider.' : '';
+  };
+  async function saveCfg() {
+    const c = await g().configGet(); const prov = $('#cfgProvider').value;
+    c.provider = prov; c.providers = c.providers || {};
+    c.providers[prov] = { endpoint: $('#cfgEndpoint').value.trim() || null, model: $('#cfgModel').value.trim() || null };
+    await g().configSet(c);
+    const key = $('#cfgKey').value; if (key) { await g().keySet(prov, key); $('#cfgKey').value = ''; }
+  }
+  $('#dlgSettings form').addEventListener('submit', async (e) => {
+    if (e.submitter && e.submitter.value === 'cancel') return;
+    e.preventDefault();
+    try { await saveCfg(); $('#dlgSettings').close(); hatch.ready = T_info(); await showLlm(); toast('Saved'); }
+    catch (err) { $('#cfgStatus').className = 'status err'; $('#cfgStatus').textContent = String(err); }
+  });
+  $('#cfgTest').onclick = async () => {
+    const st = $('#cfgStatus'); st.className = 'status'; st.textContent = 'Saving and testing…';
+    try { await saveCfg(); hatch.ready = T_info(); const r = await hatch.llm.chatFull('Reply with the single word OK.', { maxTokens: 5 });
+      st.className = 'status ok'; st.textContent = `OK — ${r.provider} / ${r.model} answered: ${r.text.trim().slice(0, 40)}`; }
+    catch (err) { st.className = 'status err'; st.textContent = String(err); }
+  };
+  function T_info() { return window.__TAURI__.core.invoke('app_info').then((i) => { hatch.app = i; return i; }); }
+
+  hatch.on('refresh', refresh);
+  refresh(); showLlm();
+</script>
+</body>
+</html>

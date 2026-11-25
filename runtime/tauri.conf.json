@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Deskhatch",
+  "version": "0.1.0",
+  "identifier": "tech.besk.deskhatch",
+  "build": {
+    "frontendDist": "gallery"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": false,
+    "category": "DeveloperTool",
+    "shortDescription": "Turn AI-generated HTML into real desktop apps",
+    "longDescription": "deskhatch runs HTML app packages (.hatch) as native desktop apps with their own icon, window, notifications, tray, hotkeys and scoped file access. Offline, no account, bring your own model.",
+    "publisher": "besk.tech",
+    "homepage": "https://github.com/beskvladimir-create/deskhatch",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["hatch"],
+        "name": "deskhatch app package",
+        "description": "deskhatch app package",
+        "role": "Viewer",
+        "mimeType": "application/x-deskhatch"
+      }
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "entitlements": null,
+      "hardenedRuntime": true
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    }
+  }
+}
