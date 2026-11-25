@@ -61,7 +61,7 @@ The tier is enforced by the runtime and by the page's content-security-policy; t
 
 ## Install
 
-Requires Node 18+ for the `npx` wrapper (the runtime itself has no dependencies).
+Requires Node 18+ for the `npx` wrapper (the runtime itself has no dependencies). Until the npm package is published, use `npx github:beskvladimir-create/deskhatch` wherever you see `npx deskhatch`.
 
 ```bash
 npx deskhatch gallery                      # downloads the runtime once, opens the gallery
