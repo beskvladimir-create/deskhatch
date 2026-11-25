@@ -373,6 +373,9 @@ pub fn self_exe() -> std::io::Result<PathBuf> {
 }
 
 pub fn spawn_app(id: &str) -> std::io::Result<()> {
+    // Spawning succeeds even when the app is gone, and the child then dies out of sight, so
+    // the caller would report success for nothing. Check first.
+    Manifest::load(&store::app_dir(id)).map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string()))?;
     // On macOS go through the app's own bundle when it has one: that keeps its name and
     // identity, and LaunchServices routes a second open to the instance already running.
     #[cfg(target_os = "macos")]
@@ -402,7 +405,12 @@ fn run_gui(app_dir: Option<PathBuf>, dev: bool) {
     if !dev {
         if let Some(m) = manifest.as_ref() {
             match claim_app(&m.id) {
-                Claim::HandedOver => return, // the running instance brings its window forward
+                Claim::HandedOver => {
+                    // The running instance brings its window forward; say so, or this looks
+                    // like a command that did nothing.
+                    eprintln!("deskhatch: {} is already open, brought its window forward", m.name);
+                    return;
+                }
                 Claim::Owner(l) => claimed = l,
             }
         }

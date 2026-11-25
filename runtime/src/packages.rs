@@ -52,7 +52,7 @@ pub fn import(source: &Path, name_override: Option<&str>) -> Result<Manifest> {
             copy_dir(&src, &dest)?;
         }
         ensure_icon(&dest, &m);
-        return Ok(m);
+        return Ok(rename_installed(&dest, m, name_override));
     }
 
     let ext = src
@@ -82,7 +82,7 @@ pub fn import(source: &Path, name_override: Option<&str>) -> Result<Manifest> {
         copy_dir(&root, &dest)?;
         let _ = fs::remove_dir_all(&tmp);
         ensure_icon(&dest, &m);
-        return Ok(m);
+        return Ok(rename_installed(&dest, m, name_override));
     }
 
     if ext == "html" || ext == "htm" {
@@ -115,6 +115,21 @@ pub fn import(source: &Path, name_override: Option<&str>) -> Result<Manifest> {
         "unsupported source {} (expected a folder with app.json, a .hatch file or an .html file)",
         src.display()
     )))
+}
+
+/// `--name` renames a package that carries its own manifest. The id stays as the package
+/// declares it, because other things already point at it; only the display name changes, and
+/// the installed app.json is rewritten so the name does not drift from the manifest.
+fn rename_installed(dir: &Path, mut m: Manifest, name_override: Option<&str>) -> Manifest {
+    let Some(name) = name_override else { return m };
+    if name.trim().is_empty() || name == m.name {
+        return m;
+    }
+    m.name = name.to_string();
+    if let Ok(bytes) = serde_json::to_vec_pretty(&m) {
+        let _ = fs::write(dir.join("app.json"), bytes);
+    }
+    m
 }
 
 /// A package may ship without the icon its manifest names. Draw a default one instead of

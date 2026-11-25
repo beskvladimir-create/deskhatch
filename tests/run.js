@@ -217,6 +217,17 @@ test('relink keeps each launcher in the mode it had', () => {
   }
 });
 
+test('--name renames a package that brought its own manifest', () => {
+  pkg(path.join(home, 'src-named'), { schema: 1, id: 'namedapp', name: 'Original', version: '1.0.0', permissions: 'web' });
+  ok(sh(['install', path.join(home, 'src-named'), '--name', 'Renamed', '--no-launcher']), 'install --name');
+  const m = JSON.parse(fs.readFileSync(path.join(home, 'apps', 'namedapp', 'app.json'), 'utf8'));
+  if (m.name !== 'Renamed') throw new Error(`the installed manifest still says ${m.name}`);
+  if (m.id !== 'namedapp') throw new Error(`the id changed to ${m.id}`);
+  const list = ok(sh(['list']), 'list');
+  if (!/Renamed/.test(list)) throw new Error(`list does not show the new name: ${list}`);
+  ok(sh(['uninstall', 'namedapp']), 'uninstall');
+});
+
 // ---------------------------------------------------------------- windows and the gallery
 
 test('a standalone bundle hosts its own app with no arguments', () => {
@@ -237,6 +248,11 @@ test('the gallery can recreate a launcher and keeps its mode', () => {
   const marker = path.join(home, 'Applications', 'Solo App.app', 'Contents', 'Resources', 'deskhatch-app');
   if (!fs.existsSync(marker)) throw new Error('recreate downgraded a standalone app to a thin launcher');
 }, MAC && GUI);
+
+test('the gallery does not claim to open an app that is gone', () => {
+  const out = evalInGallery('hatch._gallery.open("no-such-app").then(() => "CLAIMED OK").catch(e => "refused: " + e)');
+  if (!/refused/.test(out)) throw new Error(`the Open button reported success for a missing app: ${out}`);
+});
 
 test('the gallery lists what is installed', () => {
   const out = evalInGallery('hatch._gallery.list().then(l => l.map(a => a.id).sort())');
@@ -259,6 +275,10 @@ test('one app, one process: a second start hands the window over', () => {
     if (child.exitCode !== null) throw new Error('the first instance died instead of staying up');
     const err = fs.readFileSync(path.join(home, 'owner.err'), 'utf8');
     if (!/bringing it forward/.test(err)) throw new Error(`the owner never saw the handover:\n${err}`);
+    // The newcomer must say what happened, or the command looks like it did nothing.
+    if (!/already open, brought its window forward/.test(second.stderr)) {
+      throw new Error(`the second start said nothing: ${second.stderr}`);
+    }
   } finally {
     child.kill();
     fs.closeSync(log);
