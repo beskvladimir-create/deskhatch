@@ -222,8 +222,18 @@ fn fatal(msg: &str) -> ! {
     std::process::exit(1)
 }
 
+/// Path that launchers should execute: the AppImage itself on Linux when running from one.
+pub fn self_exe() -> std::io::Result<PathBuf> {
+    if let Ok(p) = std::env::var("APPIMAGE") {
+        if !p.is_empty() {
+            return Ok(PathBuf::from(p));
+        }
+    }
+    std::env::current_exe()
+}
+
 pub fn spawn_app(id: &str) -> std::io::Result<()> {
-    let exe = std::env::current_exe()?;
+    let exe = self_exe()?;
     std::process::Command::new(exe).arg("--app").arg(id).spawn()?;
     Ok(())
 }

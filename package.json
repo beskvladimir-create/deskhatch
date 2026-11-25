@@ -1,0 +1,40 @@
+{
+  "name": "deskhatch",
+  "version": "0.1.0",
+  "description": "Turn any AI-generated HTML (Claude artifacts, ChatGPT, your own) into a real desktop app: own icon, window, notifications, tray, hotkeys, scoped file access. Offline, no account, bring your own model or Ollama.",
+  "bin": {
+    "deskhatch": "cli/index.js"
+  },
+  "files": [
+    "cli/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node cli/test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/beskvladimir-create/deskhatch.git"
+  },
+  "keywords": [
+    "desktop-app",
+    "tauri",
+    "claude",
+    "artifacts",
+    "install-as-app",
+    "html-to-app",
+    "llm",
+    "ollama",
+    "local-first",
+    "offline",
+    "electron-alternative",
+    "pwa"
+  ],
+  "author": "Vladimir Beskorovainyi <admin@besk.tech> (https://besk.tech)",
+  "license": "MIT",
+  "homepage": "https://github.com/beskvladimir-create/deskhatch#readme"
+}

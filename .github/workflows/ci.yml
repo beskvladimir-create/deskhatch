@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**", "site/**"]
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: runtime
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev xvfb dbus-x11
+      - name: Build and unit tests
+        working-directory: runtime
+        run: |
+          cargo build --locked || cargo build
+          cargo test
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: CLI test
+        env:
+          DESKHATCH_BIN: ${{ github.workspace }}/runtime/target/debug/deskhatch
+        run: node cli/test.js
+      - name: Headless smoke test (window + hatch API)
+        env:
+          DESKHATCH_HOME: /tmp/dh
+        run: |
+          mkdir -p /tmp/dh
+          cat > /tmp/smoke.html <<'EOF'
+          <!doctype html><title>Smoke</title><script>
+          (async () => { await hatch.ready; await hatch.store.set('ok', true); await hatch.quit(); })();
+          </script>
+          EOF
+          runtime/target/debug/deskhatch install /tmp/smoke.html --no-launcher
+          timeout 40 xvfb-run -a dbus-run-session -- runtime/target/debug/deskhatch --app smoke || true
+          grep -q '"ok": true' /tmp/dh/data/smoke/store.json
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: runtime
+      - name: Build (unsigned, compile check only)
+        working-directory: runtime
+        run: cargo build --release
+      - name: Unit tests
+        working-directory: runtime
+        run: cargo test --release

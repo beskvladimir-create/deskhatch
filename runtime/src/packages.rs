@@ -237,7 +237,7 @@ fn safe_name(name: &str) -> String {
 
 /// Create a launcher (dock/menu icon) that starts this runtime with `--app <id>`.
 pub fn create_launcher(m: &Manifest) -> Result<PathBuf> {
-    let exe = std::env::current_exe()?;
+    let exe = crate::self_exe()?;
     let dir = store::app_dir(&m.id);
     let icon_png = dir.join(&m.icon);
     let target = launcher_path(m)
