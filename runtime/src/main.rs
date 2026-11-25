@@ -52,7 +52,20 @@ fn has(args: &[String], name: &str) -> bool {
     args.iter().any(|a| a == name)
 }
 
+/// Rust ignores SIGPIPE, so a command whose output outgrows the pipe buffer panics with
+/// "failed printing to stdout: Broken pipe" when the reader leaves early (`deskhatch list | head`).
+/// A command line tool should die quietly instead, which is what the default handler does. The
+/// GUI keeps the inherited SIG_IGN: a window host must not be killed by a closed socket.
+#[cfg(unix)]
+fn sigpipe(handler: libc::sighandler_t) {
+    unsafe {
+        libc::signal(libc::SIGPIPE, handler);
+    }
+}
+
 fn main() {
+    #[cfg(unix)]
+    sigpipe(libc::SIG_DFL);
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Err(e) = store::ensure_dirs() {
         eprintln!("deskhatch: cannot create {}: {e}", store::root().display());
@@ -323,6 +336,8 @@ pub fn spawn_app(id: &str) -> std::io::Result<()> {
 // ---------------------------------------------------------------------------------------------
 
 fn run_gui(app_dir: Option<PathBuf>, dev: bool) {
+    #[cfg(unix)]
+    sigpipe(libc::SIG_IGN);
     let manifest = app_dir.as_ref().map(|d| Manifest::load(d).unwrap_or_else(|e| fatal(&e.to_string())));
     if !dev {
         if let Some(m) = manifest.as_ref() {

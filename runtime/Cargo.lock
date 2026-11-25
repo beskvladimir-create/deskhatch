@@ -824,6 +824,7 @@ dependencies = [
  "dirs 5.0.1",
  "image",
  "keyring",
+ "libc",
  "mime_guess",
  "objc2",
  "objc2-app-kit",

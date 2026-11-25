@@ -28,7 +28,7 @@ npx deskhatch new "a pomodoro timer with a tray icon and a daily log"   # your m
 
 ## How it works
 
-No compiler, no per-app build. One small signed runtime (Tauri 2, Rust, ~10 MB) hosts app packages:
+No compiler, no per-app build. One small signed runtime (Tauri 2, Rust, ~5 MB) hosts app packages:
 
 ```
 my-app/
@@ -74,7 +74,7 @@ npx deskhatch install examples/ask --standalone   # macOS: own bundle, own name 
 On macOS an app installed the usual way runs inside the shared runtime bundle, so the system
 calls it "Deskhatch" in the menu bar, the app switcher and the notification settings, even though
 its window, dock icon and title are its own. `--standalone` copies the runtime into
-`~/Applications/<Name>.app` with the app's own name, identifier and icon: about 10 MB per app,
+`~/Applications/<Name>.app` with the app's own name, identifier and icon: about 5 MB per app,
 and the right name in every one of those places. The copy is re-signed ad-hoc locally and is
 refreshed by `npx deskhatch update`, which rebuilds every launcher.
 
