@@ -88,6 +88,11 @@ jobs:
           V="${{ steps.v.outputs.version }}"
           B="runtime/target/${{ matrix.target }}/release/bundle"
           if [ "${{ runner.os }}" = "macOS" ]; then
+            if [ "$HAS_APPLE_SECRETS" != "true" ]; then
+              echo "::warning::No Apple secrets: ad-hoc signing the bundle (Gatekeeper will warn on download)."
+              codesign --force --deep -s - "$B/macos/Deskhatch.app"
+            fi
+            codesign -dv "$B/macos/Deskhatch.app" 2>&1 | head -5 || true
             tar -C "$B/macos" -czf "dist/deskhatch-v${V}-${{ matrix.asset }}.tar.gz" Deskhatch.app
           else
             cp "$B"/appimage/*.AppImage "dist/deskhatch-v${V}-${{ matrix.asset }}.AppImage"
