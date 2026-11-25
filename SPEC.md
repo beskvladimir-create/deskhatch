@@ -53,10 +53,11 @@ API keys are never in the package; they live in the OS keychain (`deskhatch key 
 | `hatch.llm.*` (model via runtime) | ✓ | ✓ | ✓ |
 | `hatch.store.*` (per-app JSON store) | ✓ | ✓ | ✓ |
 | `hatch.notify`, tray, hotkeys, `hatch.openUrl` | – | ✓ | ✓ |
-| `hatch.fs.*` | – | folders the user picked via `pickFolder()`/`pickFile()` | anything under the home folder |
+| `hatch.fs.*` | – | folders the user picked via `pickFolder()`/`pickFile()` | anything under the home folder, plus what the user picked |
+| Navigation and `window.open` | own package only | own package only | own package only |
 | `~/.deskhatch`, `~/.ssh`, `~/.gnupg`, `~/.aws` | never | never | never |
 
-The tier is enforced in the runtime (Rust), not in the page: a page cannot grant itself anything. The content-security-policy of the page is derived from the tier, so a `web` app cannot load remote scripts, images or fonts and cannot open sockets. The gallery shows the tier of every installed app.
+The tier is enforced in the runtime (Rust), not in the page: a page cannot grant itself anything. The content-security-policy of the page is derived from the tier, so a `web` app cannot load remote scripts, images or fonts and cannot open sockets. The content-security-policy does not cover navigation, so the runtime also refuses any navigation outside the package and every `window.open`; external links go through `hatch.openUrl`. The gallery shows the tier of every installed app.
 
 ## The `hatch` API (injected into every page)
 

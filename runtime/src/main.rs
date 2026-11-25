@@ -527,7 +527,9 @@ fn setup_app(app: &mut tauri::App, m: Manifest, dir: PathBuf, dev: bool) -> taur
         .resizable(m.window.resizable)
         .always_on_top(m.window.always_on_top)
         .decorations(m.window.decorations)
-        .initialization_script(SHIM_JS);
+        .initialization_script(SHIM_JS)
+        .on_navigation(page_may_navigate)
+        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
     if let (Some(w), Some(h)) = (m.window.min_width, m.window.min_height) {
         wb = wb.min_inner_size(w, h);
     }
@@ -647,6 +649,19 @@ fn setup_app(app: &mut tauri::App, m: Manifest, dir: PathBuf, dev: bool) -> taur
     Ok(())
 }
 
+/// A page may only navigate inside its own package. Without this, `location.href = "https://…"`
+/// or a meta refresh would carry data out past the content-security-policy, which only governs
+/// requests made from the page. External links go through `hatch.openUrl` (desktop tier and up).
+pub(crate) fn page_may_navigate(url: &tauri::Url) -> bool {
+    match url.scheme() {
+        "hatch" => true,
+        // Windows and Android serve custom protocols as http://<scheme>.localhost.
+        "http" | "https" => url.host_str() == Some("hatch.localhost"),
+        "about" => url.path() == "blank",
+        _ => false,
+    }
+}
+
 fn setup_gallery(app: &mut tauri::App) -> tauri::Result<()> {
     // Without this the gallery could only be opened from a terminal.
     if let Err(e) = packages::ensure_gallery_launcher() {
@@ -657,6 +672,8 @@ fn setup_gallery(app: &mut tauri::App) -> tauri::Result<()> {
         .inner_size(960.0, 680.0)
         .min_inner_size(640.0, 420.0)
         .initialization_script(SHIM_JS)
+        .on_navigation(page_may_navigate)
+        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
         .build()?;
     if let Some(js) = TEST_EVAL.get() {
         schedule_test_eval(&w, js);
@@ -859,4 +876,27 @@ fn percent_decode(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::page_may_navigate;
+
+    fn nav(u: &str) -> bool {
+        page_may_navigate(&u.parse().unwrap())
+    }
+
+    #[test]
+    fn page_stays_inside_its_package() {
+        assert!(nav("hatch://localhost/"));
+        assert!(nav("hatch://localhost/page2.html#x"));
+        assert!(nav("http://hatch.localhost/"));
+        assert!(nav("about:blank"));
+        assert!(!nav("https://example.com/?d=secret"));
+        assert!(!nav("http://localhost:8080/"));
+        assert!(!nav("https://hatch.localhost.evil.com/"));
+        assert!(!nav("data:text/html,<p>x</p>"));
+        assert!(!nav("file:///etc/passwd"));
+        assert!(!nav("javascript:alert(1)"));
+    }
 }

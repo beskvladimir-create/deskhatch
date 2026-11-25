@@ -169,7 +169,8 @@ DESKHATCH_BIN=$PWD/runtime/target/debug/deskhatch DESKHATCH_GUI=1 node tests/run
 ## Security notes
 
 - Packages are plain files; read `index.html` before installing something from a stranger, the same way you would read a script.
-- `web` apps cannot reach the network from the page. The only way out is `hatch.llm.chat`, which talks to the endpoint *you* configured.
+- `web` apps cannot reach the network from the page, and no page can navigate away from its own package or open a new window. The only way out is `hatch.llm.chat`, which talks to the endpoint *you* configured.
+- `full` reads and writes anywhere in your home folder, shell startup files included, so a `full` app can get code run at your next login. There is no API to start programs, but grant `full` only to apps you wrote or trust.
 - `~/.deskhatch`, `~/.ssh`, `~/.gnupg` and `~/.aws` are never accessible to any tier.
 - The macOS runtime in Releases is signed with a Developer ID certificate and notarised by Apple: `spctl -a -t exec Deskhatch.app` reports `Notarized Developer ID`. Thin launchers are tiny local bundles pointing at it, so there is nothing to re-sign per app; a `--standalone` bundle is a local copy and is signed ad-hoc on your own machine, which Gatekeeper does not evaluate. Check the release notes of a build for its signing status.
 
