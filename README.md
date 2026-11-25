@@ -140,6 +140,17 @@ DESKHATCH_BIN=$PWD/target/release/deskhatch node ../cli/index.js list
 npx @tauri-apps/cli@2 build                  # bundles (.app / .AppImage / .deb)
 ```
 
+Tests. `tests/run.js` is a regression suite: every case in it is a bug deskhatch has actually
+had, from a launcher that lost its icon to a window that would not come back after being hidden.
+It drives the real binary, and the window cases drive the gallery's own commands through a
+test-only `--eval` hook, so a fix can be checked without a mouse.
+
+```bash
+cd runtime && cargo build && cargo test
+cd .. && DESKHATCH_BIN=$PWD/runtime/target/debug/deskhatch npm test        # CLI + regressions
+DESKHATCH_BIN=$PWD/runtime/target/debug/deskhatch DESKHATCH_GUI=1 node tests/run.js   # also the window cases
+```
+
 ## Security notes
 
 - Packages are plain files; read `index.html` before installing something from a stranger, the same way you would read a script.

@@ -27,6 +27,9 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, Windo
 const GALLERY_HTML: &str = include_str!("../gallery/index.html");
 const SHIM_JS: &str = include_str!("../gallery/hatch.js");
 
+/// Test-only: the expression `--eval` runs inside the window, see `schedule_test_eval`.
+static TEST_EVAL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 /// Managed state: which app this process hosts (None = gallery).
 pub struct AppCtx {
     pub manifest: Option<Manifest>,
@@ -71,9 +74,17 @@ fn main() {
         eprintln!("deskhatch: cannot create {}: {e}", store::root().display());
     }
 
+    if std::env::var_os("DESKHATCH_TEST").is_some() {
+        if let Some(js) = flag(&args, "--eval") {
+            let _ = TEST_EVAL.set(js);
+        }
+    }
+
     match args.first().map(|s| s.as_str()) {
         // A standalone bundle carries the app id inside itself and gets no arguments.
-        None => match bundled_app_id() {
+        // `--eval` is a test-only entry point and must land in the same window as no arguments
+        // at all, otherwise a test cannot tell a standalone bundle from the gallery.
+        Some("--eval") | None => match bundled_app_id() {
             Some(id) => start_app(&id),
             None => run_gui(None, false),
         },
@@ -278,32 +289,63 @@ fn bundled_app_id() -> Option<String> {
     None
 }
 
-/// Only one process should host a given app: two windows would write the same store behind
-/// each other's back. Returns false when another live instance already has it.
-fn claim_app(id: &str) -> bool {
-    let pid_file = store::data_dir(id).join("run.pid");
-    if let Some(pid) = std::fs::read_to_string(&pid_file)
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok())
-    {
-        if pid != std::process::id() && is_deskhatch_process(pid) {
-            return false;
-        }
-    }
-    let _ = std::fs::create_dir_all(store::data_dir(id));
-    let _ = std::fs::write(&pid_file, std::process::id().to_string());
-    true
+/// Outcome of asking for the right to host an app.
+enum Claim {
+    /// This process hosts it. The listener, when there is one, answers later starts.
+    Owner(Option<ClaimListener>),
+    /// A live instance already hosts it and was asked to come forward; this process should stop.
+    HandedOver,
 }
 
-/// A pid is only ours if it is alive *and* still a deskhatch process: pids get reused.
-fn is_deskhatch_process(pid: u32) -> bool {
-    match std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "comm="])
-        .output()
-    {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).contains("deskhatch"),
-        _ => false,
+#[cfg(unix)]
+type ClaimListener = std::os::unix::net::UnixListener;
+#[cfg(not(unix))]
+type ClaimListener = ();
+
+/// Only one process hosts a given app: two windows would write the same store behind each
+/// other's back. The owner holds a socket; a later start connects to it, which brings the
+/// running window forward, and then leaves. A socket we cannot bind at all never blocks a
+/// start: hosting twice is better than refusing to open.
+#[cfg(unix)]
+fn claim_app(id: &str) -> Claim {
+    use std::io::Write;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    let path = claim_socket(id);
+    match UnixListener::bind(&path) {
+        Ok(l) => Claim::Owner(Some(l)),
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            match UnixStream::connect(&path) {
+                Ok(mut s) => {
+                    let _ = s.write_all(b"show");
+                    Claim::HandedOver
+                }
+                // Bound but nobody listening: a crash left the socket behind.
+                Err(_) => {
+                    let _ = std::fs::remove_file(&path);
+                    Claim::Owner(UnixListener::bind(&path).ok())
+                }
+            }
+        }
+        Err(_) => Claim::Owner(None),
     }
+}
+
+#[cfg(not(unix))]
+fn claim_app(_id: &str) -> Claim {
+    Claim::Owner(None)
+}
+
+/// Socket for the single-instance handover. It lives in the temp directory, keyed by a hash of
+/// the deskhatch home and the app id, because a socket path is limited to about 100 characters
+/// and the home directory can be long.
+#[cfg(unix)]
+fn claim_socket(id: &str) -> PathBuf {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in store::root().to_string_lossy().as_bytes().iter().chain(b"\0").chain(id.as_bytes()) {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    std::env::temp_dir().join(format!("deskhatch-{h:016x}.sock"))
 }
 
 fn ids() -> Vec<String> {
@@ -326,6 +368,18 @@ pub fn self_exe() -> std::io::Result<PathBuf> {
 }
 
 pub fn spawn_app(id: &str) -> std::io::Result<()> {
+    // On macOS go through the app's own bundle when it has one: that keeps its name and
+    // identity, and LaunchServices routes a second open to the instance already running.
+    #[cfg(target_os = "macos")]
+    if let Ok(m) = Manifest::load(&store::app_dir(id)) {
+        if let Some(p) = packages::launcher_path(&m).filter(|p| p.exists()) {
+            if let Ok(st) = std::process::Command::new("open").arg("-a").arg(&p).status() {
+                if st.success() {
+                    return Ok(());
+                }
+            }
+        }
+    }
     let exe = self_exe()?;
     std::process::Command::new(exe).arg("--app").arg(id).spawn()?;
     Ok(())
@@ -339,14 +393,12 @@ fn run_gui(app_dir: Option<PathBuf>, dev: bool) {
     #[cfg(unix)]
     sigpipe(libc::SIG_IGN);
     let manifest = app_dir.as_ref().map(|d| Manifest::load(d).unwrap_or_else(|e| fatal(&e.to_string())));
+    let mut claimed: Option<ClaimListener> = None;
     if !dev {
         if let Some(m) = manifest.as_ref() {
-            if !claim_app(&m.id) {
-                eprintln!(
-                    "deskhatch: {} is already open. Use its hotkey or its dock icon to bring it forward.",
-                    m.name
-                );
-                return;
+            match claim_app(&m.id) {
+                Claim::HandedOver => return, // the running instance brings its window forward
+                Claim::Owner(l) => claimed = l,
             }
         }
     }
@@ -394,8 +446,20 @@ fn run_gui(app_dir: Option<PathBuf>, dev: bool) {
             commands::config_set,
             commands::key_set,
             commands::key_has,
+            commands::test_result,
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            #[cfg(unix)]
+            if let Some(l) = claimed.take() {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    for stream in l.incoming() {
+                        drop(stream);
+                        eprintln!("deskhatch: another start asked for this window, bringing it forward");
+                        toggle_main(&h, true);
+                    }
+                });
+            }
             let state = app.state::<AppCtx>();
             match (&state.manifest, &state.app_dir) {
                 (Some(m), Some(dir)) => setup_app(app, m.clone(), dir.clone(), state.dev)?,
@@ -409,13 +473,21 @@ fn run_gui(app_dir: Option<PathBuf>, dev: bool) {
         .unwrap_or_else(|e| fatal(&format!("failed to start: {e}")));
 
     app.run(|app, event| {
+        // Clicking the icon of an app that is already running must bring its window back, even
+        // when a close only hid it into the tray.
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = &event {
+            eprintln!("deskhatch: reopened from the dock, bringing the window forward");
+            toggle_main(app, true);
+        }
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Opened { urls } = &event {
             for u in urls {
                 if let Ok(p) = u.to_file_path() {
                     match packages::import(&p, None) {
                         Ok(m) => {
-                            let _ = packages::create_launcher(&m);
+                            let standalone = packages::launcher_is_standalone(&m);
+                            let _ = packages::create_launcher_for(&m, standalone);
                             let _ = spawn_app(&m.id);
                             let _ = app.emit("hatch:refresh", ());
                         }
@@ -449,6 +521,9 @@ fn setup_app(app: &mut tauri::App, m: Manifest, dir: PathBuf, dev: bool) -> taur
     }
     let hide_on_close = m.tray.enabled && m.tray.hide_on_close;
     let window = wb.build()?;
+    if let Some(js) = TEST_EVAL.get() {
+        schedule_test_eval(&window, js);
+    }
 
     if hide_on_close {
         let w2 = window.clone();
@@ -543,17 +618,46 @@ fn setup_app(app: &mut tauri::App, m: Manifest, dir: PathBuf, dev: bool) -> taur
 }
 
 fn setup_gallery(app: &mut tauri::App) -> tauri::Result<()> {
-    WebviewWindowBuilder::new(app, "gallery", WebviewUrl::CustomProtocol("hatch://localhost/".parse().unwrap()))
+    let w = WebviewWindowBuilder::new(app, "gallery", WebviewUrl::CustomProtocol("hatch://localhost/".parse().unwrap()))
         .title("deskhatch")
         .inner_size(960.0, 680.0)
         .min_inner_size(640.0, 420.0)
         .initialization_script(SHIM_JS)
         .build()?;
+    if let Some(js) = TEST_EVAL.get() {
+        schedule_test_eval(&w, js);
+    }
     Ok(())
 }
 
+/// Test-only: evaluate one expression in a real window and print its JSON result on stdout,
+/// then end the process. This is how the test suite drives the gallery's own commands and the
+/// `hatch` API without a mouse. Reachable only with DESKHATCH_TEST set.
+fn schedule_test_eval(window: &tauri::WebviewWindow, js: &str) {
+    let script = String::new()
+        + "(function run(){ if(!window.hatch||!window.__TAURI__) return setTimeout(run,30);"
+        + " (async()=>{ let out;"
+        + " try{ out = JSON.stringify(await (" + js + ")); }"
+        + " catch(e){ out = 'ERROR: ' + (e && e.message ? e.message : String(e)); }"
+        + " try{ await window.__TAURI__.core.invoke('test_result', {text: String(out)}); }catch(e){}"
+        + " })(); })();";
+    let w = window.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let _ = w.eval(&script);
+    });
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(20));
+        println!("ERROR: the expression never reported back");
+        std::process::exit(3);
+    });
+}
+
 fn toggle_main(app: &AppHandle, force_show: bool) {
-    if let Some(w) = app.get_webview_window("main") {
+    let w = app
+        .get_webview_window("main")
+        .or_else(|| app.get_webview_window("gallery"));
+    if let Some(w) = w {
         let visible = w.is_visible().unwrap_or(false);
         let focused = w.is_focused().unwrap_or(false);
         if !force_show && visible && focused {

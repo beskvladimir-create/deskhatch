@@ -392,6 +392,19 @@ pub fn gallery_launcher(window: Window, id: String) -> R<String> {
     Ok(p.to_string_lossy().to_string())
 }
 
+/// Test-only sink for `--eval`: prints the expression's result and ends the process, so a test
+/// can read it from stdout. Refuses unless DESKHATCH_TEST is set.
+#[tauri::command]
+pub fn test_result(text: String) -> R<()> {
+    if std::env::var_os("DESKHATCH_TEST").is_none() {
+        return Err("test-only command".into());
+    }
+    println!("{text}");
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    std::process::exit(0);
+}
+
 #[tauri::command]
 pub fn gallery_reveal(window: Window, id: String) -> R<()> {
     gallery_only(&window)?;

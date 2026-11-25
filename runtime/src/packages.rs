@@ -330,14 +330,15 @@ fn standalone_launcher(m: &Manifest) -> Result<PathBuf> {
     let icon_png = dir.join(&m.icon);
     let target = launcher_path(m)
         .ok_or_else(|| PkgError::Other("launchers are not supported on this OS yet".into()))?;
-    if target.exists() {
-        fs::remove_dir_all(&target)?;
-    }
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
-    copy_dir(&bundle, &target)?;
-    let contents = target.join("Contents");
+    // Build beside the target and swap at the end. Rebuilding in place would leave the bundle
+    // missing for a while, and the app may well be running from it right now.
+    let staging = target.with_extension("app.new");
+    let _ = fs::remove_dir_all(&staging);
+    copy_dir(&bundle, &staging)?;
+    let contents = staging.join("Contents");
     let resources = contents.join("Resources");
     fs::create_dir_all(&resources)?;
     // The copy must not inherit the runtime's identity, its .hatch file association or its icon.
@@ -352,17 +353,24 @@ fn standalone_launcher(m: &Manifest) -> Result<PathBuf> {
     // Sign the copy ad-hoc; it is created locally, so Gatekeeper does not evaluate it.
     match std::process::Command::new("codesign")
         .args(["--force", "--deep", "--sign", "-"])
-        .arg(&target)
+        .arg(&staging)
         .output()
     {
         Ok(o) if !o.status.success() => eprintln!(
             "deskhatch: could not ad-hoc sign {}: {}",
-            target.display(),
+            staging.display(),
             String::from_utf8_lossy(&o.stderr).trim()
         ),
         Err(e) => eprintln!("deskhatch: codesign is not available: {e}"),
         _ => {}
     }
+    let previous = target.with_extension("app.old");
+    let _ = fs::remove_dir_all(&previous);
+    if target.exists() {
+        fs::rename(&target, &previous)?;
+    }
+    fs::rename(&staging, &target)?;
+    let _ = fs::remove_dir_all(&previous);
     // Nudge LaunchServices so Finder/Dock picks up the new bundle.
     let _ = std::process::Command::new("touch").arg(&target).status();
     Ok(target)
