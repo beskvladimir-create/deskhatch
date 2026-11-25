@@ -59,25 +59,28 @@ jobs:
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
         run: |
-          echo "signing=1" >> "$GITHUB_ENV"
+          # Export the signing variables to later steps only when they are really set:
+          # tauri-cli treats an *empty* APPLE_CERTIFICATE as "please import this", and fails.
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_API_KEY APPLE_API_ISSUER; do
+            val="${!v}"
+            if [ -n "$val" ]; then
+              echo "$v<<__EOF__" >> "$GITHUB_ENV"; echo "$val" >> "$GITHUB_ENV"; echo "__EOF__" >> "$GITHUB_ENV"
+            fi
+          done
           if [ -n "$APPLE_API_KEY_CONTENT" ]; then
-            echo "$APPLE_API_KEY_CONTENT" > "$RUNNER_TEMP/AuthKey.p8"
+            printf '%s\n' "$APPLE_API_KEY_CONTENT" > "$RUNNER_TEMP/AuthKey.p8"
             echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
           fi
 
       - name: Build with Tauri
         working-directory: runtime
         shell: bash
-        env:
-          # Code signing: tauri-cli imports APPLE_CERTIFICATE (base64 .p12) into a temporary keychain.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          # Notarization via App Store Connect API key (APPLE_API_KEY_PATH is set above).
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }} ${{ runner.os == 'Linux' && '--bundles appimage,deb' || '--bundles app' }}
 
