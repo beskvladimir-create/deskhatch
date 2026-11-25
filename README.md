@@ -122,7 +122,7 @@ npx deskhatch export my-app                # → my-app.hatch to share
 
 ## Status
 
-v0.1, built in a day, launched the same week Claude shipped the feature. Runtime, CLI, tiers, model bridge and generation are covered by headless tests on Linux (Ubuntu 22.04) in CI; macOS builds are produced by the release workflow. What is still open:
+v0.2. The macOS runtime is signed with a Developer ID certificate and notarised by Apple, so it opens from a browser download without the Privacy & Security detour. Runtime, CLI, tiers, model bridge and generation are covered by headless tests on Linux (Ubuntu 22.04) in CI; macOS builds are produced by the release workflow. What is still open:
 
 - **Windows**: the runtime compiles, launchers and signing do not exist yet. Vote on [#1](https://github.com/beskvladimir-create/deskhatch/issues/1).
 - macOS: apps that share the runtime bundle are called "Deskhatch" by the system (menu bar, app switcher, notification settings) because that is the bundle they run from. `install --standalone` fixes it at the cost of a runtime copy per app; making that the default is still open in [#2](https://github.com/beskvladimir-create/deskhatch/issues/2).
@@ -145,7 +145,7 @@ npx @tauri-apps/cli@2 build                  # bundles (.app / .AppImage / .deb)
 - Packages are plain files; read `index.html` before installing something from a stranger, the same way you would read a script.
 - `web` apps cannot reach the network from the page. The only way out is `hatch.llm.chat`, which talks to the endpoint *you* configured.
 - `~/.deskhatch`, `~/.ssh`, `~/.gnupg` and `~/.aws` are never accessible to any tier.
-- The release workflow signs and notarizes the macOS runtime when the Apple secrets are present; launchers are tiny local bundles that point at it, so there is nothing to re-sign per app. Check the release notes of a build for its signing status.
+- The macOS runtime in Releases is signed with a Developer ID certificate and notarised by Apple: `spctl -a -t exec Deskhatch.app` reports `Notarized Developer ID`. Thin launchers are tiny local bundles pointing at it, so there is nothing to re-sign per app; a `--standalone` bundle is a local copy and is signed ad-hoc on your own machine, which Gatekeeper does not evaluate. Check the release notes of a build for its signing status.
 
 ## License
 
