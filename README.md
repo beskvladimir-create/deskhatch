@@ -37,7 +37,7 @@ my-app/
   icon.png
 ```
 
-`install` copies the package to `~/.deskhatch/apps/<id>` and drops a launcher in `~/Applications` (macOS) or the app menu (Linux). The launcher starts the runtime with `--app <id>`. The page gets a `hatch` object:
+`install` copies the package to `~/.deskhatch/apps/<id>` and drops a launcher in `~/Applications` (macOS) or the app menu (Linux). The launcher starts the runtime with `--app <id>`. On macOS `--standalone` gives the app its own copy of the runtime instead, so its name shows up everywhere the system asks for one. The page gets a `hatch` object:
 
 ```js
 const answer = await hatch.llm.chat("Summarise this: " + text);   // your model, your key, never in the HTML
@@ -68,7 +68,15 @@ npx deskhatch gallery                      # downloads the runtime once, opens t
 npx deskhatch install examples/pomodoro    # a folder with app.json
 npx deskhatch install hello.html           # a bare HTML file
 npx deskhatch install friend.hatch         # a package someone sent you
+npx deskhatch install examples/ask --standalone   # macOS: own bundle, own name everywhere
 ```
+
+On macOS an app installed the usual way runs inside the shared runtime bundle, so the system
+calls it "Deskhatch" in the menu bar, the app switcher and the notification settings, even though
+its window, dock icon and title are its own. `--standalone` copies the runtime into
+`~/Applications/<Name>.app` with the app's own name, identifier and icon: about 10 MB per app,
+and the right name in every one of those places. The copy is re-signed ad-hoc locally and is
+refreshed by `npx deskhatch update`, which rebuilds every launcher.
 
 Or grab the runtime from [Releases](https://github.com/beskvladimir-create/deskhatch/releases) and drop `.hatch` files on it. Linux: the `npx` wrapper uses the AppImage (needs `libfuse2` on Ubuntu 22.04+; without it the AppImage self-extracts, slower); a `.deb` is in Releases too.
 
@@ -117,7 +125,7 @@ npx deskhatch export my-app                # → my-app.hatch to share
 v0.1, built in a day, launched the same week Claude shipped the feature. Runtime, CLI, tiers, model bridge and generation are covered by headless tests on Linux (Ubuntu 22.04) in CI; macOS builds are produced by the release workflow. What is still open:
 
 - **Windows**: the runtime compiles, launchers and signing do not exist yet. Vote on [#1](https://github.com/beskvladimir-create/deskhatch/issues/1).
-- macOS menu bar shows "Deskhatch" as the application name inside your app's menu (the dock icon and window title are yours). Tracked in [#2](https://github.com/beskvladimir-create/deskhatch/issues/2).
+- macOS: apps that share the runtime bundle are called "Deskhatch" by the system (menu bar, app switcher, notification settings) because that is the bundle they run from. `install --standalone` fixes it at the cost of a runtime copy per app; making that the default is still open in [#2](https://github.com/beskvladimir-create/deskhatch/issues/2).
 - Streaming replies from `hatch.llm.chat` ([#3](https://github.com/beskvladimir-create/deskhatch/issues/3)).
 - Importing a Claude artifact straight from its share link ([#4](https://github.com/beskvladimir-create/deskhatch/issues/4)).
 

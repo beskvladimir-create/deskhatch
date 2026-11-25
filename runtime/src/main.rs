@@ -36,7 +36,7 @@ pub struct AppCtx {
 
 fn usage() -> ! {
     eprintln!(
-        "deskhatch {}\n\nUSAGE:\n  deskhatch                         open the gallery\n  deskhatch --app <id>              run an installed app\n  deskhatch --dev <dir>             run an app folder with live reload\n  deskhatch install <src> [--name N] [--no-launcher] [--run]\n                                    src = folder with app.json | file.hatch | page.html\n  deskhatch new \"<prompt>\" [--name N] [--tier web|desktop|full] [--model M] [--run]\n  deskhatch list\n  deskhatch uninstall <id>\n  deskhatch export <id> [--out <dir>]\n  deskhatch config [--provider P] [--model M] [--endpoint URL]\n  deskhatch key <provider>          read an API key from stdin and store it in the OS keychain\n  deskhatch models                  list models from the configured endpoint\n  deskhatch doctor                  print paths and configuration\n  deskhatch <file.hatch>            install and run a package",
+        "deskhatch {}\n\nUSAGE:\n  deskhatch                         open the gallery\n  deskhatch --app <id>              run an installed app\n  deskhatch --dev <dir>             run an app folder with live reload\n  deskhatch install <src> [--name N] [--no-launcher] [--standalone] [--run]\n                                    src = folder with app.json | file.hatch | page.html\n  deskhatch new \"<prompt>\" [--name N] [--tier web|desktop|full] [--model M] [--run]\n  deskhatch list\n  deskhatch relink                  re-create every launcher (after a runtime update)\n  deskhatch uninstall <id>\n  deskhatch export <id> [--out <dir>]\n  deskhatch config [--provider P] [--model M] [--endpoint URL]\n  deskhatch key <provider>          read an API key from stdin and store it in the OS keychain\n  deskhatch models                  list models from the configured endpoint\n  deskhatch doctor                  print paths and configuration\n  deskhatch <file.hatch>            install and run a package",
         env!("CARGO_PKG_VERSION")
     );
     std::process::exit(2)
@@ -59,14 +59,14 @@ fn main() {
     }
 
     match args.first().map(|s| s.as_str()) {
-        None => run_gui(None, false),
+        // A standalone bundle carries the app id inside itself and gets no arguments.
+        None => match bundled_app_id() {
+            Some(id) => start_app(&id),
+            None => run_gui(None, false),
+        },
         Some("--app") => {
             let id = args.get(1).cloned().unwrap_or_else(|| usage());
-            let dir = store::app_dir(&id);
-            match Manifest::load(&dir) {
-                Ok(_) => run_gui(Some(dir), false),
-                Err(e) => fatal(&format!("{e}. Installed apps: {}", ids().join(", "))),
-            }
+            start_app(&id)
         }
         Some("--dev") => {
             let dir = PathBuf::from(args.get(1).cloned().unwrap_or_else(|| usage()));
@@ -96,8 +96,13 @@ fn main() {
             let m = packages::import(Path::new(&src), name.as_deref()).unwrap_or_else(|e| fatal(&e.to_string()));
             println!("installed {} ({}) -> {}", m.name, m.id, store::app_dir(&m.id).display());
             if !has(&args, "--no-launcher") {
-                match packages::create_launcher(&m) {
-                    Ok(p) => println!("launcher    {}", p.display()),
+                let standalone = has(&args, "--standalone");
+                match packages::create_launcher_for(&m, standalone) {
+                    Ok(p) => println!(
+                        "launcher    {}{}",
+                        p.display(),
+                        if standalone { "  (standalone)" } else { "" }
+                    ),
                     Err(e) => eprintln!("launcher skipped: {e}"),
                 }
             }
@@ -121,7 +126,7 @@ fn main() {
             let m = tauri::async_runtime::block_on(gen::generate(&prompt, name.as_deref(), tier, model.as_deref()))
                 .unwrap_or_else(|e| fatal(&e));
             println!("created {} ({}) -> {}", m.name, m.id, store::app_dir(&m.id).display());
-            match packages::create_launcher(&m) {
+            match packages::create_launcher_for(&m, has(&args, "--standalone")) {
                 Ok(p) => println!("launcher {}", p.display()),
                 Err(e) => eprintln!("launcher skipped: {e}"),
             }
@@ -138,6 +143,25 @@ fn main() {
             }
             for a in apps {
                 println!("{:<24} {:<8} {:<8} {}", a.id, a.version, a.permissions, a.name);
+            }
+        }
+        Some("relink") => {
+            for a in packages::list() {
+                match Manifest::load(&store::app_dir(&a.id)) {
+                    Ok(m) => {
+                        let standalone = packages::launcher_is_standalone(&m);
+                        match packages::create_launcher_for(&m, standalone) {
+                            Ok(p) => println!(
+                                "{:<24} {}{}",
+                                m.id,
+                                p.display(),
+                                if standalone { "  (standalone)" } else { "" }
+                            ),
+                            Err(e) => eprintln!("{}: {e}", m.id),
+                        }
+                    }
+                    Err(e) => eprintln!("{}: {e}", a.id),
+                }
             }
         }
         Some("uninstall") => {
@@ -213,6 +237,62 @@ fn main() {
     }
 }
 
+/// Load an installed app and host it, or explain which ids exist.
+fn start_app(id: &str) {
+    let dir = store::app_dir(id);
+    match Manifest::load(&dir) {
+        Ok(_) => run_gui(Some(dir), false),
+        Err(e) => fatal(&format!("{e}. Installed apps: {}", ids().join(", "))),
+    }
+}
+
+/// The app id written into a standalone bundle at install time, so the copied runtime knows
+/// which app it hosts without any command line arguments.
+#[cfg(target_os = "macos")]
+fn bundled_app_id() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let marker = exe
+        .parent()?
+        .parent()?
+        .join("Resources")
+        .join(packages::APP_ID_MARKER);
+    let id = std::fs::read_to_string(marker).ok()?.trim().to_string();
+    (!id.is_empty()).then_some(id)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn bundled_app_id() -> Option<String> {
+    None
+}
+
+/// Only one process should host a given app: two windows would write the same store behind
+/// each other's back. Returns false when another live instance already has it.
+fn claim_app(id: &str) -> bool {
+    let pid_file = store::data_dir(id).join("run.pid");
+    if let Some(pid) = std::fs::read_to_string(&pid_file)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+    {
+        if pid != std::process::id() && is_deskhatch_process(pid) {
+            return false;
+        }
+    }
+    let _ = std::fs::create_dir_all(store::data_dir(id));
+    let _ = std::fs::write(&pid_file, std::process::id().to_string());
+    true
+}
+
+/// A pid is only ours if it is alive *and* still a deskhatch process: pids get reused.
+fn is_deskhatch_process(pid: u32) -> bool {
+    match std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).contains("deskhatch"),
+        _ => false,
+    }
+}
+
 fn ids() -> Vec<String> {
     packages::list().into_iter().map(|a| a.id).collect()
 }
@@ -244,6 +324,17 @@ pub fn spawn_app(id: &str) -> std::io::Result<()> {
 
 fn run_gui(app_dir: Option<PathBuf>, dev: bool) {
     let manifest = app_dir.as_ref().map(|d| Manifest::load(d).unwrap_or_else(|e| fatal(&e.to_string())));
+    if !dev {
+        if let Some(m) = manifest.as_ref() {
+            if !claim_app(&m.id) {
+                eprintln!(
+                    "deskhatch: {} is already open. Use its hotkey or its dock icon to bring it forward.",
+                    m.name
+                );
+                return;
+            }
+        }
+    }
     let ctx = AppCtx { manifest, app_dir, dev };
 
     let builder = tauri::Builder::default()

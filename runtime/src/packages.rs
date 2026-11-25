@@ -51,6 +51,7 @@ pub fn import(source: &Path, name_override: Option<&str>) -> Result<Manifest> {
         if dest.canonicalize().ok().as_deref() != Some(&src) {
             copy_dir(&src, &dest)?;
         }
+        ensure_icon(&dest, &m);
         return Ok(m);
     }
 
@@ -80,6 +81,7 @@ pub fn import(source: &Path, name_override: Option<&str>) -> Result<Manifest> {
         }
         copy_dir(&root, &dest)?;
         let _ = fs::remove_dir_all(&tmp);
+        ensure_icon(&dest, &m);
         return Ok(m);
     }
 
@@ -113,6 +115,21 @@ pub fn import(source: &Path, name_override: Option<&str>) -> Result<Manifest> {
         "unsupported source {} (expected a folder with app.json, a .hatch file or an .html file)",
         src.display()
     )))
+}
+
+/// A package may ship without the icon its manifest names. Draw a default one instead of
+/// leaving the app with the system placeholder.
+fn ensure_icon(dir: &Path, m: &Manifest) {
+    let icon = dir.join(&m.icon);
+    if icon.exists() {
+        return;
+    }
+    if let Some(parent) = icon.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Err(e) = write_default_icon(&icon, &m.name) {
+        eprintln!("deskhatch: could not draw a default icon: {e}");
+    }
 }
 
 fn html_title(html: &str) -> Option<String> {
@@ -235,6 +252,128 @@ fn safe_name(name: &str) -> String {
     s.trim().to_string()
 }
 
+/// Info.plist for a macOS launcher bundle. `executable` is the file in Contents/MacOS that
+/// macOS starts: the thin shell script, or the copied runtime binary in a standalone bundle.
+#[cfg(target_os = "macos")]
+fn mac_plist(m: &Manifest, executable: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>{name}</string>
+  <key>CFBundleDisplayName</key><string>{name}</string>
+  <key>CFBundleIdentifier</key><string>tech.besk.deskhatch.app.{id}</string>
+  <key>CFBundleVersion</key><string>{version}</string>
+  <key>CFBundleShortVersionString</key><string>{version}</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleExecutable</key><string>{executable}</string>
+  <key>CFBundleIconFile</key><string>app.icns</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>LSUIElement</key><false/>
+</dict>
+</plist>
+"#,
+        name = xml_escape(&m.name),
+        id = xml_escape(&m.id),
+        version = xml_escape(&m.version),
+        executable = executable,
+    )
+}
+
+/// The .app bundle this binary runs from, when it runs from one at all.
+#[cfg(target_os = "macos")]
+fn runtime_bundle() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let bundle = contents.parent()?;
+    let looks_right = macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle.extension().map(|e| e == "app").unwrap_or(false)
+        && contents.join("Info.plist").exists();
+    looks_right.then(|| bundle.to_path_buf())
+}
+
+/// True when this app's launcher is a standalone copy of the runtime rather than a thin script.
+pub fn launcher_is_standalone(m: &Manifest) -> bool {
+    match launcher_path(m) {
+        Some(p) => p.join("Contents").join("Resources").join(APP_ID_MARKER).exists(),
+        None => false,
+    }
+}
+
+/// Name of the file inside a standalone bundle that tells the runtime which app to host.
+pub const APP_ID_MARKER: &str = "deskhatch-app";
+
+/// Create a launcher, either the thin shared one or a standalone bundle with its own identity.
+pub fn create_launcher_for(m: &Manifest, standalone: bool) -> Result<PathBuf> {
+    if standalone {
+        standalone_launcher(m)
+    } else {
+        create_launcher(m)
+    }
+}
+
+/// A full copy of the runtime bundle carrying the app's own name, identifier and icon, so that
+/// the menu bar, the dock, the app switcher and the notification settings all show the app
+/// instead of "Deskhatch". Costs one runtime copy (~10 MB) per app.
+#[cfg(target_os = "macos")]
+fn standalone_launcher(m: &Manifest) -> Result<PathBuf> {
+    let bundle = runtime_bundle().ok_or_else(|| {
+        PkgError::Other(
+            "a standalone app needs the bundled runtime (Deskhatch.app); this binary does not run from one".into(),
+        )
+    })?;
+    let dir = store::app_dir(&m.id);
+    let icon_png = dir.join(&m.icon);
+    let target = launcher_path(m)
+        .ok_or_else(|| PkgError::Other("launchers are not supported on this OS yet".into()))?;
+    if target.exists() {
+        fs::remove_dir_all(&target)?;
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    copy_dir(&bundle, &target)?;
+    let contents = target.join("Contents");
+    let resources = contents.join("Resources");
+    fs::create_dir_all(&resources)?;
+    // The copy must not inherit the runtime's identity, its .hatch file association or its icon.
+    let _ = fs::remove_dir_all(contents.join("_CodeSignature"));
+    let _ = fs::remove_file(resources.join("icon.icns"));
+    fs::write(contents.join("Info.plist"), mac_plist(m, "deskhatch"))?;
+    fs::write(resources.join(APP_ID_MARKER), format!("{}\n", m.id))?;
+    if let Err(e) = write_icns(&icon_png, &resources.join("app.icns")) {
+        eprintln!("deskhatch: icon skipped: {e}");
+    }
+    // Info.plist and the resources changed, so the inherited signature no longer matches.
+    // Sign the copy ad-hoc; it is created locally, so Gatekeeper does not evaluate it.
+    match std::process::Command::new("codesign")
+        .args(["--force", "--deep", "--sign", "-"])
+        .arg(&target)
+        .output()
+    {
+        Ok(o) if !o.status.success() => eprintln!(
+            "deskhatch: could not ad-hoc sign {}: {}",
+            target.display(),
+            String::from_utf8_lossy(&o.stderr).trim()
+        ),
+        Err(e) => eprintln!("deskhatch: codesign is not available: {e}"),
+        _ => {}
+    }
+    // Nudge LaunchServices so Finder/Dock picks up the new bundle.
+    let _ = std::process::Command::new("touch").arg(&target).status();
+    Ok(target)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn standalone_launcher(m: &Manifest) -> Result<PathBuf> {
+    eprintln!("deskhatch: standalone apps are macOS-only; creating the usual launcher");
+    create_launcher(m)
+}
+
 /// Create a launcher (dock/menu icon) that starts this runtime with `--app <id>`.
 pub fn create_launcher(m: &Manifest) -> Result<PathBuf> {
     let exe = crate::self_exe()?;
@@ -251,31 +390,7 @@ pub fn create_launcher(m: &Manifest) -> Result<PathBuf> {
         let contents = target.join("Contents");
         fs::create_dir_all(contents.join("MacOS"))?;
         fs::create_dir_all(contents.join("Resources"))?;
-        let bundle_id = format!("tech.besk.deskhatch.app.{}", m.id);
-        let plist = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleName</key><string>{name}</string>
-  <key>CFBundleDisplayName</key><string>{name}</string>
-  <key>CFBundleIdentifier</key><string>{bundle_id}</string>
-  <key>CFBundleVersion</key><string>{version}</string>
-  <key>CFBundleShortVersionString</key><string>{version}</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleExecutable</key><string>launch</string>
-  <key>CFBundleIconFile</key><string>app.icns</string>
-  <key>LSMinimumSystemVersion</key><string>11.0</string>
-  <key>NSHighResolutionCapable</key><true/>
-  <key>LSUIElement</key><false/>
-</dict>
-</plist>
-"#,
-            name = xml_escape(&m.name),
-            bundle_id = bundle_id,
-            version = xml_escape(&m.version),
-        );
-        fs::write(contents.join("Info.plist"), plist)?;
+        fs::write(contents.join("Info.plist"), mac_plist(m, "launch"))?;
         let script = format!(
             "#!/bin/sh\nexec {} --app {} \"$@\"\n",
             shell_quote(&exe.to_string_lossy()),

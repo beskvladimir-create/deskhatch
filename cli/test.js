@@ -29,4 +29,18 @@ if (!list.includes('cli-test-app')) throw new Error('list missing app');
 run(['export', 'cli-test-app', '--out', home]);
 if (!fs.existsSync(path.join(home, 'cli-test-app.hatch'))) throw new Error('export missing');
 run(['uninstall', 'cli-test-app']);
+
+// A package folder may ship without the icon its manifest names: one must be drawn for it,
+// otherwise the launcher ends up with the system placeholder.
+const folder = path.join(home, 'noicon');
+fs.mkdirSync(folder);
+fs.writeFileSync(
+  path.join(folder, 'app.json'),
+  JSON.stringify({ schema: 1, id: 'noicon', name: 'No Icon', version: '1.0.0', permissions: 'web' })
+);
+fs.writeFileSync(path.join(folder, 'index.html'), '<!doctype html><title>No Icon</title><h1>x</h1>');
+run(['install', folder, '--no-launcher']);
+if (!fs.existsSync(path.join(home, 'apps', 'noicon', 'icon.png'))) throw new Error('default icon missing');
+run(['relink']);
+run(['uninstall', 'noicon']);
 console.log('cli test ok');

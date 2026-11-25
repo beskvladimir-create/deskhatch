@@ -99,7 +99,7 @@ function fail(msg) {
 function usage() {
   process.stdout.write(`deskhatch ${VERSION} — turn HTML into real desktop apps
 
-  npx deskhatch install <page.html | app-folder | file.hatch> [--name N] [--run]
+  npx deskhatch install <page.html | app-folder | file.hatch> [--name N] [--standalone] [--run]
   npx deskhatch new "<what the app should do>" [--name N] [--tier web|desktop|full] [--model M] [--run]
   npx deskhatch run <id>            start an installed app
   npx deskhatch dev <folder>        run an app folder with live reload
@@ -108,7 +108,7 @@ function usage() {
   npx deskhatch config [--provider ollama|openai|...] [--model M] [--endpoint URL]
   npx deskhatch key <provider>      store an API key in the OS keychain (read from stdin)
   npx deskhatch models | doctor
-  npx deskhatch update              re-download the runtime
+  npx deskhatch update              re-download the runtime and re-create the launchers
 `);
 }
 
@@ -118,7 +118,12 @@ async function main() {
   if (!cmd || cmd === '-h' || cmd === '--help' || cmd === 'help') return usage();
   if (cmd === '--version' || cmd === '-V') return process.stdout.write(VERSION + '\n');
 
-  if (cmd === 'update') { await ensureRuntime({ force: true }); return; }
+  if (cmd === 'update') {
+    const bin = await ensureRuntime({ force: true });
+    // Standalone apps hold their own copy of the runtime, so rebuild every launcher.
+    const r = spawnSync(bin, ['relink'], { stdio: 'inherit' });
+    process.exit(r.status ?? 0);
+  }
   const bin = await ensureRuntime();
 
   let fwd;

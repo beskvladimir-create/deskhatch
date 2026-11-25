@@ -64,7 +64,7 @@
     left -= 1;
     if (left <= 0) {
       stop();
-      if (mode === 'focus') { log.count += 1; log.mins += 25; await save(); }
+      if (mode === 'focus') { log.count += 1; log.mins += Math.round(DUR.focus / 60); await save(); }
       try { await hatch.notify(mode === 'focus' ? 'Focus session done' : 'Break over', mode === 'focus' ? 'Take a break. You earned it.' : 'Back to focus.'); } catch (e) {}
       setMode(mode === 'focus' ? (log.count % 4 === 0 ? 'long' : 'short') : 'focus');
       return;

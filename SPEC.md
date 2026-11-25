@@ -97,6 +97,18 @@ hatch.about() / hatch.quit()
 
 Launchers: `~/Applications/<Name>.app` on macOS, `~/.local/share/applications/deskhatch-<id>.desktop` on Linux. They start the shared runtime with `--app <id>`; nothing is compiled per app.
 
+`install --standalone` (macOS) builds the launcher differently: the whole runtime bundle is copied
+to `~/Applications/<Name>.app`, its `Info.plist` gets the app's name, version, icon and the
+identifier `tech.besk.deskhatch.app.<id>`, the app id is written to
+`Contents/Resources/deskhatch-app`, and the copy is signed ad-hoc. Started without arguments, the
+runtime reads that file and hosts the app named in it. Such a bundle has its own identity for the
+menu bar, the dock, the app switcher, notification settings and the permission prompts, and it
+costs one runtime copy per app. `deskhatch relink` rebuilds every launcher, keeping each app in the
+mode it already had, which is what `npx deskhatch update` calls after fetching a new runtime.
+
+Only one process hosts a given app: the pid is kept in `~/.deskhatch/data/<id>/run.pid`, and a
+second start exits with a message instead of opening a second window onto the same store.
+
 ## Sharing
 
 `deskhatch export <id>` (or **Share .hatch** in the gallery) zips the app folder into `<id>.hatch`. The recipient installs it with `npx deskhatch install file.hatch`, by double-clicking it (file association), or via **Install from file…** in the gallery. The package carries no keys and no user data.

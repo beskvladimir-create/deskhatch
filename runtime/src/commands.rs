@@ -360,7 +360,7 @@ pub async fn gallery_import(app: AppHandle, window: Window) -> R<Option<String>>
     let picked = app
         .dialog()
         .file()
-        .set_title("Choose a .hatch package, an app folder or an .html file")
+        .set_title("Choose a .hatch package, an app.json or an .html file")
         .add_filter("deskhatch app", &["hatch", "zip", "html", "htm", "json"])
         .blocking_pick_file();
     let Some(fp) = picked else { return Ok(None) };
@@ -386,7 +386,9 @@ pub fn gallery_share(window: Window, id: String) -> R<String> {
 pub fn gallery_launcher(window: Window, id: String) -> R<String> {
     gallery_only(&window)?;
     let m = Manifest::load(&store::app_dir(&id)).map_err(|e| e.to_string())?;
-    let p = packages::create_launcher(&m).map_err(|e| e.to_string())?;
+    // Keep whatever kind of launcher this app already has instead of silently downgrading it.
+    let standalone = packages::launcher_is_standalone(&m);
+    let p = packages::create_launcher_for(&m, standalone).map_err(|e| e.to_string())?;
     Ok(p.to_string_lossy().to_string())
 }
 
