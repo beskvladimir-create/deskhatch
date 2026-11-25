@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pomodoro</title>
+<style>
+  :root { --bg:#fff7ed; --fg:#1c1917; --muted:#78716c; --accent:#ea580c; --card:#ffffff; --line:#fed7aa; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#1c1917; --fg:#fafaf9; --muted:#a8a29e; --accent:#fb923c; --card:#292524; --line:#44403c; } }
+  * { box-sizing:border-box } html,body { margin:0; height:100% }
+  body { background:var(--bg); color:var(--fg); font:15px/1.4 -apple-system,"Segoe UI",Inter,Roboto,sans-serif; display:flex; flex-direction:column; align-items:center; padding:24px 20px; gap:14px; }
+  .mode { display:flex; gap:6px; background:var(--card); border:1px solid var(--line); border-radius:999px; padding:4px; }
+  .mode button { border:0; background:transparent; color:var(--muted); padding:6px 14px; border-radius:999px; font:inherit; cursor:pointer; }
+  .mode button.on { background:var(--accent); color:#fff; }
+  .clock { font-size:88px; font-weight:700; letter-spacing:-2px; font-variant-numeric:tabular-nums; line-height:1; margin-top:8px; }
+  .ring { width:220px; height:220px; border-radius:50%; display:grid; place-items:center; background:conic-gradient(var(--accent) var(--p,0%), var(--line) 0); }
+  .ring .in { width:196px; height:196px; border-radius:50%; background:var(--bg); display:grid; place-items:center; }
+  .ctl { display:flex; gap:10px }
+  .ctl button { font:inherit; font-weight:600; padding:10px 22px; border-radius:12px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; }
+  .ctl button.primary { background:var(--accent); color:#fff; border-color:transparent; }
+  .log { width:100%; max-width:360px; background:var(--card); border:1px solid var(--line); border-radius:14px; padding:12px 14px; font-size:13px; }
+  .log h3 { margin:0 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); }
+  .log .row { display:flex; justify-content:space-between; color:var(--muted); }
+  .log .row b { color:var(--fg) }
+  .hint { color:var(--muted); font-size:12px; text-align:center; }
+  kbd { font-family:inherit; border:1px solid var(--line); border-radius:5px; padding:0 5px; background:var(--card); }
+</style>
+</head>
+<body>
+  <div class="mode">
+    <button data-m="focus" class="on">Focus 25</button>
+    <button data-m="short">Break 5</button>
+    <button data-m="long">Long 15</button>
+  </div>
+  <div class="ring" id="ring"><div class="in"><div class="clock" id="clock">25:00</div></div></div>
+  <div class="ctl">
+    <button class="primary" id="start">Start</button>
+    <button id="reset">Reset</button>
+  </div>
+  <div class="log">
+    <h3>Today</h3>
+    <div class="row"><span>Focus sessions</span><b id="count">0</b></div>
+    <div class="row"><span>Focused minutes</span><b id="mins">0</b></div>
+  </div>
+  <div class="hint">Tray icon keeps running when you close the window. <kbd>⌘⇧P</kbd> show/hide · <kbd>⌘⇧O</kbd> start/stop</div>
+<script>
+  const DUR = { focus: 25*60, short: 5*60, long: 15*60 };
+  let mode = 'focus', left = DUR.focus, running = false, tick = null, log = { day: '', count: 0, mins: 0 };
+  const $ = (s) => document.querySelector(s);
+  const today = () => new Date().toISOString().slice(0,10);
+
+  function render() {
+    const m = String(Math.floor(left/60)).padStart(2,'0'), s = String(left%60).padStart(2,'0');
+    $('#clock').textContent = `${m}:${s}`;
+    $('#ring').style.setProperty('--p', `${100 - (left/DUR[mode])*100}%`);
+    $('#start').textContent = running ? 'Pause' : 'Start';
+    $('#count').textContent = log.count; $('#mins').textContent = log.mins;
+    document.querySelectorAll('.mode button').forEach(b => b.classList.toggle('on', b.dataset.m === mode));
+    hatch.window.setTitle(`${m}:${s} · Pomodoro`).catch(()=>{});
+  }
+  function setMode(m) { mode = m; left = DUR[m]; stop(); render(); }
+  function start() { if (running) return; running = true; tick = setInterval(step, 1000); render(); }
+  function stop() { running = false; clearInterval(tick); render(); }
+  async function step() {
+    left -= 1;
+    if (left <= 0) {
+      stop();
+      if (mode === 'focus') { log.count += 1; log.mins += 25; await save(); }
+      try { await hatch.notify(mode === 'focus' ? 'Focus session done' : 'Break over', mode === 'focus' ? 'Take a break. You earned it.' : 'Back to focus.'); } catch (e) {}
+      setMode(mode === 'focus' ? (log.count % 4 === 0 ? 'long' : 'short') : 'focus');
+      return;
+    }
+    render();
+  }
+  async function save() { await hatch.store.set('log', log); }
+  async function load() {
+    const l = await hatch.store.get('log');
+    if (l && l.day === today()) log = l; else log = { day: today(), count: 0, mins: 0 };
+  }
+  $('#start').onclick = () => running ? stop() : start();
+  $('#reset').onclick = () => setMode(mode);
+  document.querySelectorAll('.mode button').forEach(b => b.onclick = () => setMode(b.dataset.m));
+  hatch.on('hotkey', (name) => { if (name === 'startStop') running ? stop() : start(); });
+  (async () => { await hatch.ready; await load(); render(); })();
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "id": "folder-notes",
+  "name": "Folder Notes",
+  "version": "1.0.0",
+  "description": "Pick a folder, see what is in it, and ask your model to summarise any text file. Shows how scoped file access works: the app only sees folders you granted.",
+  "permissions": "desktop",
+  "window": { "width": 820, "height": 600 },
+  "author": "deskhatch examples"
+}

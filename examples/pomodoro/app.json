@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "id": "pomodoro",
+  "name": "Pomodoro",
+  "version": "1.0.0",
+  "description": "25/5 focus timer with a daily log, a tray icon and a global hotkey. Notifies you when a session ends.",
+  "permissions": "desktop",
+  "window": { "width": 420, "height": 560, "minWidth": 340, "minHeight": 460 },
+  "tray": { "enabled": true, "tooltip": "Pomodoro", "hideOnClose": true },
+  "hotkeys": { "toggle": "CmdOrCtrl+Shift+P", "startStop": "CmdOrCtrl+Shift+O" },
+  "author": "deskhatch examples"
+}

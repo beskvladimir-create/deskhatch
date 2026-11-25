@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "ask",
+  "name": "Ask",
+  "version": "1.0.0",
+  "description": "A one-box chat with your own model (Ollama by default). Keeps history locally. Nothing leaves your machine unless you pointed deskhatch at a cloud provider.",
+  "permissions": "web",
+  "window": { "width": 640, "height": 720, "minWidth": 420, "minHeight": 480 },
+  "llm": { "system": "You are a concise, friendly assistant. Answer in the user's language. Use short paragraphs." },
+  "author": "deskhatch examples"
+}

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Folder Notes</title>
+<style>
+  :root { --bg:#fafaf9; --fg:#1c1917; --muted:#78716c; --line:#e7e5e4; --card:#fff; --accent:#0f766e; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141413; --fg:#f5f5f4; --muted:#a8a29e; --line:#2a2a28; --card:#1e1e1c; --accent:#2dd4bf; } }
+  * { box-sizing:border-box } html,body { margin:0; height:100% }
+  body { background:var(--bg); color:var(--fg); font:14px/1.5 -apple-system,"Segoe UI",Inter,Roboto,sans-serif; display:grid; grid-template-columns:300px 1fr; grid-template-rows:auto 1fr; }
+  header { grid-column:1/-1; display:flex; gap:10px; align-items:center; padding:10px 14px; border-bottom:1px solid var(--line); }
+  header button { font:inherit; border:1px solid var(--line); background:var(--card); color:var(--fg); padding:6px 12px; border-radius:8px; cursor:pointer; }
+  header .path { color:var(--muted); font-size:12.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  aside { border-right:1px solid var(--line); overflow:auto; padding:8px; }
+  aside div { padding:6px 8px; border-radius:8px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  aside div:hover { background:var(--card) } aside div.on { background:var(--accent); color:#fff; }
+  aside .dir::before { content:'▸ '; color:var(--muted) }
+  main { padding:14px; overflow:auto; display:flex; flex-direction:column; gap:10px; }
+  pre { margin:0; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; white-space:pre-wrap; max-height:45vh; overflow:auto; font:12.5px/1.45 ui-monospace,Menlo,monospace; }
+  .sum { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:10px; padding:12px; white-space:pre-wrap; }
+  .hint { color:var(--muted) } button.primary { background:var(--accent); color:#fff; border:0; padding:8px 14px; border-radius:8px; font:inherit; cursor:pointer; align-self:flex-start; }
+</style>
+</head>
+<body>
+  <header><button id="pick">Choose folder…</button><span class="path" id="path">No folder granted yet. deskhatch apps only see folders you choose.</span></header>
+  <aside id="tree"></aside>
+  <main id="main"><div class="hint">Select a text file on the left.</div></main>
+<script>
+  const $ = (s) => document.querySelector(s);
+  let root = null, current = null;
+  async function open(dir) {
+    root = dir; $('#path').textContent = dir; await hatch.store.set('root', dir);
+    const items = await hatch.fs.list(dir);
+    const t = $('#tree'); t.innerHTML = '';
+    if (dir !== root) {}
+    for (const it of items) {
+      const d = document.createElement('div'); d.textContent = it.name; d.className = it.is_dir ? 'dir' : 'file';
+      d.onclick = () => it.is_dir ? open(it.path) : show(it);
+      t.appendChild(d);
+    }
+  }
+  async function show(it) {
+    current = it; [...$('#tree').children].forEach(c => c.classList.toggle('on', c.textContent === it.name));
+    const m = $('#main'); m.innerHTML = '';
+    if (it.size > 2_000_000) { m.innerHTML = '<div class="hint">File too large to preview (2 MB limit in this demo).</div>'; return; }
+    let text;
+    try { text = await hatch.fs.readText(it.path); } catch (e) { m.innerHTML = `<div class="hint">Cannot read as text: ${e}</div>`; return; }
+    const pre = document.createElement('pre'); pre.textContent = text.slice(0, 20000); m.appendChild(pre);
+    const b = document.createElement('button'); b.className = 'primary'; b.textContent = 'Summarise with my model'; m.appendChild(b);
+    b.onclick = async () => {
+      b.disabled = true; b.textContent = 'Thinking…';
+      try {
+        const s = await hatch.llm.chat(`Summarise this file in 5 bullet points. File name: ${it.name}\n\n${text.slice(0, 12000)}`);
+        const d = document.createElement('div'); d.className = 'sum'; d.textContent = s; m.appendChild(d);
+      } catch (e) { const d = document.createElement('div'); d.className = 'hint'; d.textContent = String(e); m.appendChild(d); }
+      b.disabled = false; b.textContent = 'Summarise again';
+    };
+  }
+  $('#pick').onclick = async () => { try { const p = await hatch.fs.pickFolder('Choose a folder for Folder Notes'); if (p) open(p); } catch (e) { $('#path').textContent = String(e); } };
+  (async () => { await hatch.ready; const saved = await hatch.store.get('root'); if (saved && await hatch.fs.exists(saved)) open(saved); })();
+</script>
+</body>
+</html>

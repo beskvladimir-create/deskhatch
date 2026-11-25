@@ -1,0 +1,102 @@
+# The `.hatch` app package — format specification v1
+
+A deskhatch app is a folder (or a zip of that folder with the `.hatch` extension) containing:
+
+```
+my-app/
+  app.json      manifest (required)
+  index.html    entry page (required; name configurable via "entry")
+  icon.png      512×512 or 1024×1024 PNG (optional; a placeholder is generated if missing)
+  assets/…      anything the page references with relative URLs (optional)
+```
+
+Everything is served to the page from the `hatch://localhost/` origin. Relative URLs work; `..` is refused.
+
+## app.json
+
+```jsonc
+{
+  "schema": 1,
+  "id": "pomodoro",               // [a-z0-9-], 1–64 chars; unique on the machine
+  "name": "Pomodoro",             // window title, launcher name
+  "version": "1.0.0",
+  "description": "25/5 focus timer",
+  "icon": "icon.png",             // default "icon.png"
+  "entry": "index.html",          // default "index.html"
+  "window": {                     // all optional
+    "width": 420, "height": 560,
+    "minWidth": 340, "minHeight": 460,
+    "resizable": true, "alwaysOnTop": false, "decorations": true
+  },
+  "permissions": "desktop",       // "web" (default) | "desktop" | "full"
+  "tray": { "enabled": true, "tooltip": "Pomodoro", "hideOnClose": true },
+  "hotkeys": { "toggle": "CmdOrCtrl+Shift+P", "startStop": "CmdOrCtrl+Shift+O" },
+  "llm": {                        // defaults for hatch.llm.chat(); all optional
+    "provider": "ollama",         // ollama | openai | openrouter | groq | mistral | deepseek | lmstudio | llamacpp | <custom>
+    "model": "qwen2.5-coder:7b",
+    "endpoint": "http://localhost:11434/v1",
+    "system": "You are…"
+  },
+  "allowedHosts": ["api.example.com"],   // desktop/full only: hosts the page may fetch() directly; "*" = any https host
+  "author": "…", "homepage": "https://…"
+}
+```
+
+Precedence for model settings: `app.json` → user's `deskhatch config` for that provider → built-in defaults.
+API keys are never in the package; they live in the OS keychain (`deskhatch key <provider>`) or in `DESKHATCH_API_KEY[_<PROVIDER>]`.
+
+## Permission tiers
+
+| | `web` | `desktop` | `full` |
+|---|---|---|---|
+| Page network (fetch/XHR/websocket) | none | only `allowedHosts` | only `allowedHosts` |
+| `hatch.llm.*` (model via runtime) | ✓ | ✓ | ✓ |
+| `hatch.store.*` (per-app JSON store) | ✓ | ✓ | ✓ |
+| `hatch.notify`, tray, hotkeys, `hatch.openUrl` | – | ✓ | ✓ |
+| `hatch.fs.*` | – | folders the user picked via `pickFolder()`/`pickFile()` | anything under the home folder |
+| `~/.deskhatch`, `~/.ssh`, `~/.gnupg`, `~/.aws` | never | never | never |
+
+The tier is enforced in the runtime (Rust), not in the page: a page cannot grant itself anything. The content-security-policy of the page is derived from the tier, so a `web` app cannot load remote scripts, images or fonts and cannot open sockets. The gallery shows the tier of every installed app.
+
+## The `hatch` API (injected into every page)
+
+```js
+await hatch.ready                                   // {id, name, version, permissions, platform, llm:{provider,model,endpoint,has_key}, hotkeys, dev}
+hatch.app                                           // same object, after ready
+
+await hatch.llm.chat("prompt")                      // → string
+await hatch.llm.chat([{role,content},…], {model, temperature, maxTokens, system, json})
+await hatch.llm.chatFull(…)                         // → {text, model, provider, usage}
+await hatch.llm.models()                            // → [ids]
+
+await hatch.store.get(key) / set(key, value) / remove(key) / all()   // JSON values, 20 MB per app
+
+await hatch.notify(title, body?)                    // desktop+
+await hatch.openUrl("https://…")                    // desktop+
+await hatch.fs.pickFolder(title?) / pickFile(title?)   // desktop+, grants that folder to this app, returns path or null
+await hatch.fs.grants()                             // folders this app may use
+await hatch.fs.list(path) / readText(path) / writeText(path, text) / exists(path) / mkdir(path) / remove(path)
+
+hatch.window.setTitle(t) / minimize() / hide() / show() / toggle() / setAlwaysOnTop(bool)
+hatch.on("hotkey", name => …)                       // names from app.json "hotkeys"
+hatch.about() / hatch.quit()
+```
+
+`window.llm` is an alias of `hatch.llm`. Errors are thrown as strings.
+
+## Where things live
+
+```
+~/.deskhatch/
+  apps/<id>/          installed packages (what the page sees)
+  data/<id>/store.json
+  grants/<id>.json    folders granted to the app
+  config.json         default provider / endpoints / models
+  runtime/<version>/  the runtime downloaded by `npx deskhatch`
+```
+
+Launchers: `~/Applications/<Name>.app` on macOS, `~/.local/share/applications/deskhatch-<id>.desktop` on Linux. They start the shared runtime with `--app <id>`; nothing is compiled per app.
+
+## Sharing
+
+`deskhatch export <id>` (or **Share .hatch** in the gallery) zips the app folder into `<id>.hatch`. The recipient installs it with `npx deskhatch install file.hatch`, by double-clicking it (file association), or via **Install from file…** in the gallery. The package carries no keys and no user data.
