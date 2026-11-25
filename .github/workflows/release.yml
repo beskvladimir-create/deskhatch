@@ -27,6 +27,8 @@ jobs:
             target: aarch64-unknown-linux-gnu
             asset: linux-arm64
     runs-on: ${{ matrix.os }}
+    env:
+      HAS_APPLE_SECRETS: ${{ secrets.APPLE_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -53,7 +55,7 @@ jobs:
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"; else echo "version=0.0.0-dev" >> "$GITHUB_OUTPUT"; fi
 
       - name: Prepare Apple signing (only when secrets are present)
-        if: runner.os == 'macOS' && secrets.APPLE_CERTIFICATE != ''
+        if: runner.os == 'macOS' && env.HAS_APPLE_SECRETS == 'true'
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}

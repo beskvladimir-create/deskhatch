@@ -481,7 +481,7 @@ pub fn show_about(app: &AppHandle, m: Option<&Manifest>) {
 
 #[cfg(target_os = "macos")]
 fn set_dock_icon(icon: &tauri::image::Image<'_>) {
-    use objc2::MainThreadMarker;
+    use objc2::{AnyThread, MainThreadMarker};
     use objc2_app_kit::{NSApplication, NSImage};
     use objc2_foundation::NSData;
     // Re-encode RGBA -> PNG so NSImage can read it.
