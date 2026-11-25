@@ -139,18 +139,27 @@ test('config survives head -3', () => {
 
 // ---------------------------------------------------------------- launchers
 
-test('the thin launcher carries the app name and points at the runtime', () => {
+// Every later case uses thinapp, so this one must run on every platform.
+test('the launcher carries the app name and points at the runtime', () => {
   pkg(path.join(home, 'src-thin'), { schema: 1, id: 'thinapp', name: 'Thin App', version: '2.1.0', permissions: 'web' });
   const out = ok(sh(['install', path.join(home, 'src-thin')]), 'install');
   if (!/launcher/.test(out)) throw new Error(`no launcher in output: ${out}`);
-  const bundle = path.join(home, 'Applications', 'Thin App.app');
-  if (!fs.existsSync(bundle)) throw new Error('launcher bundle missing');
-  const p = plist(bundle);
-  if (p.CFBundleName !== 'Thin App') throw new Error(`CFBundleName is ${p.CFBundleName}`);
-  if (p.CFBundleIdentifier !== 'tech.besk.deskhatch.app.thinapp') throw new Error(`id is ${p.CFBundleIdentifier}`);
-  const script = fs.readFileSync(path.join(bundle, 'Contents', 'MacOS', 'launch'), 'utf8');
-  if (!script.includes('--app') || !script.includes('thinapp')) throw new Error(`launcher script: ${script}`);
-}, MAC);
+  if (MAC) {
+    const bundle = path.join(home, 'Applications', 'Thin App.app');
+    if (!fs.existsSync(bundle)) throw new Error('launcher bundle missing');
+    const p = plist(bundle);
+    if (p.CFBundleName !== 'Thin App') throw new Error(`CFBundleName is ${p.CFBundleName}`);
+    if (p.CFBundleIdentifier !== 'tech.besk.deskhatch.app.thinapp') throw new Error(`id is ${p.CFBundleIdentifier}`);
+    const script = fs.readFileSync(path.join(bundle, 'Contents', 'MacOS', 'launch'), 'utf8');
+    if (!script.includes('--app') || !script.includes('thinapp')) throw new Error(`launcher script: ${script}`);
+  } else {
+    const entry = path.join(home, '.local', 'share', 'applications', 'deskhatch-thinapp.desktop');
+    if (!fs.existsSync(entry)) throw new Error('desktop entry missing');
+    const d = fs.readFileSync(entry, 'utf8');
+    if (!/^Name=Thin App$/m.test(d)) throw new Error(`desktop entry has no name:\n${d}`);
+    if (!/--app thinapp/.test(d)) throw new Error(`desktop entry does not start the app:\n${d}`);
+  }
+});
 
 test('a standalone bundle gets its own name, identifier, icon and app id', () => {
   pkg(path.join(home, 'src-solo'), { schema: 1, id: 'soloapp', name: 'Solo App', version: '3.4.5', permissions: 'web' });
@@ -179,8 +188,10 @@ test('relink keeps each launcher in the mode it had', () => {
   if (!/thinapp\s/.test(out)) throw new Error(`thin app missing from relink: ${out}`);
   if (MAC && !/soloapp.*\(standalone\)/.test(out)) throw new Error(`standalone not preserved: ${out}`);
   if (/thinapp.*\(standalone\)/.test(out)) throw new Error(`thin app was upgraded behind our back: ${out}`);
-  const thin = path.join(home, 'Applications', 'Thin App.app', 'Contents', 'MacOS', 'launch');
-  if (MAC && !fs.existsSync(thin)) throw new Error('thin launcher lost its script');
+  const thin = MAC
+    ? path.join(home, 'Applications', 'Thin App.app', 'Contents', 'MacOS', 'launch')
+    : path.join(home, '.local', 'share', 'applications', 'deskhatch-thinapp.desktop');
+  if (!fs.existsSync(thin)) throw new Error('the thin launcher did not survive relink');
   if (MAC) {
     const marker = path.join(home, 'Applications', 'Solo App.app', 'Contents', 'Resources', 'deskhatch-app');
     if (!fs.existsSync(marker)) throw new Error('standalone bundle lost its app id');
