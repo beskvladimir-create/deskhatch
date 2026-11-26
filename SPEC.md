@@ -10,7 +10,7 @@ my-app/
   assets/…      anything the page references with relative URLs (optional)
 ```
 
-Everything is served to the page from an origin of its own, `hatch://app-<id>/` (the gallery uses `hatch://gallery/`), so apps never share localStorage, IndexedDB or caches. On Linux each app also gets its own web-data folder. Relative URLs work; `..` and links that point outside the package are refused.
+Everything is served to the page from an origin of its own, `hatch://app-<id>-<nonce>/` with a nonce renewed on every install (the gallery uses `hatch://gallery/`), so apps never share localStorage, IndexedDB or caches. On Linux each app also gets its own web-data folder. Relative URLs work; `..` and links that point outside the package are refused.
 
 ## app.json
 
