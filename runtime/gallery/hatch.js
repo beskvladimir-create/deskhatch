@@ -48,7 +48,7 @@
       minimize: () => T().window.getCurrentWindow().minimize(),
       hide: () => T().window.getCurrentWindow().hide(),
       show: () => T().window.getCurrentWindow().show(),
-      setAlwaysOnTop: (v) => T().window.getCurrentWindow().setAlwaysOnTop(!!v),
+      setAlwaysOnTop: (v) => inv('window_set_always_on_top', { on: !!v }),
     },
 
     /** on('hotkey', name => ...), on('refresh', () => ...) */

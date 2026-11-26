@@ -158,6 +158,50 @@ pub enum ManifestError {
     BadId(String),
     #[error("entry file {0} not found")]
     MissingEntry(String),
+    #[error("app.json is not allowed: {0}")]
+    Unsafe(String),
+}
+
+/// A relative path that stays inside the package: only plain components, no `..`, no root.
+pub fn safe_rel_path(p: &str) -> bool {
+    use std::path::Component;
+    let path = Path::new(p);
+    !p.is_empty()
+        && !p.contains('\\')
+        && path.components().all(|c| matches!(c, Component::Normal(_)))
+}
+
+fn has_control(s: &str) -> bool {
+    s.chars().any(|c| c.is_control())
+}
+
+/// A host for allowedHosts: "*", "host.name[:port]" or "https://host.name[:port]".
+fn valid_host_entry(h: &str) -> bool {
+    if h == "*" {
+        return true;
+    }
+    // https only: plain http would travel unencrypted, and the network guard tunnels only TLS.
+    let rest = h.strip_prefix("https://").unwrap_or(h);
+    let (host, port) = match rest.rsplit_once(':') {
+        Some((a, b)) => (a, Some(b)),
+        None => (rest, None),
+    };
+    !host.is_empty()
+        && host.len() <= 253
+        && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        && port.is_none_or(|p| !p.is_empty() && p.len() <= 5 && p.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Global hotkeys need a real modifier, so an app cannot listen for plain typing, and may not
+/// take the shortcuts everyone relies on.
+fn valid_hotkey(acc: &str) -> bool {
+    let parts: Vec<String> = acc.split('+').map(|p| p.trim().to_ascii_lowercase()).collect();
+    let mods = ["cmdorctrl", "commandorcontrol", "ctrl", "control", "cmd", "command", "super", "meta", "alt", "option"];
+    let has_mod = parts.iter().any(|p| mods.contains(&p.as_str()));
+    let Some(key) = parts.last() else { return false };
+    let only_primary = parts.len() == 2;
+    let reserved = ["c", "v", "x", "a", "z", "q", "w", "tab", "space", "keyc", "keyv", "keyx", "keya", "keyz", "keyq", "keyw"];
+    has_mod && !(only_primary && reserved.contains(&key.as_str()))
 }
 
 pub fn valid_id(id: &str) -> bool {
@@ -167,6 +211,30 @@ pub fn valid_id(id: &str) -> bool {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         && !id.starts_with('-')
+}
+
+/// A display name made safe for launchers and dialogs: whitespace and control characters
+/// collapse to single spaces, at most 60 characters, never empty, never "deskhatch".
+pub fn clean_name(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if c.is_control() || c.is_whitespace() {
+            if !out.ends_with(' ') && !out.is_empty() {
+                out.push(' ');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    let out: String = out.trim().chars().take(60).collect();
+    let out = out.trim().to_string();
+    if out.is_empty() {
+        "App".into()
+    } else if out.eq_ignore_ascii_case("deskhatch") {
+        "deskhatch app".into()
+    } else {
+        out
+    }
 }
 
 pub fn slugify(name: &str) -> String {
@@ -205,18 +273,67 @@ impl Manifest {
         if !valid_id(&self.id) {
             return Err(ManifestError::BadId(self.id.clone()));
         }
-        if self.entry.contains("..") || !dir.join(&self.entry).is_file() {
+        let bad = |why: &str| Err(ManifestError::Unsafe(why.to_string()));
+        // Text fields end up in launchers (.desktop files, Info.plist), dialogs and the gallery.
+        let name = self.name.trim();
+        if name.is_empty() || name.chars().count() > 64 || has_control(&self.name) {
+            return bad("name must be 1-64 characters with no line breaks or control characters");
+        }
+        if name.eq_ignore_ascii_case("deskhatch") {
+            return bad("the name \"deskhatch\" is reserved");
+        }
+        for (what, v) in [
+            ("version", Some(self.version.as_str())),
+            ("description", self.description.as_deref()),
+            ("author", self.author.as_deref()),
+            ("homepage", self.homepage.as_deref()),
+            ("tray.tooltip", self.tray.tooltip.as_deref()),
+        ] {
+            if let Some(v) = v {
+                if has_control(v) || v.chars().count() > 500 {
+                    return Err(ManifestError::Unsafe(format!("{what} has line breaks or control characters, or is too long")));
+                }
+            }
+        }
+        if !safe_rel_path(&self.entry) || !dir.join(&self.entry).is_file() {
             return Err(ManifestError::MissingEntry(self.entry.clone()));
+        }
+        if !safe_rel_path(&self.icon) {
+            return bad("icon must be a path inside the package");
+        }
+        if self.allowed_hosts.len() > 32 || !self.allowed_hosts.iter().all(|h| valid_host_entry(h)) {
+            return bad("allowedHosts entries must be host names, optionally with https:// and a port (no http://)");
+        }
+        if self.hotkeys.len() > 5 {
+            return bad("at most 5 hotkeys");
+        }
+        for (k, v) in &self.hotkeys {
+            if has_control(k) || k.len() > 64 || !valid_hotkey(v) {
+                return Err(ManifestError::Unsafe(format!(
+                    "hotkey {k:?} = {v:?} must use Ctrl, Alt, Cmd or Super and may not take a common shortcut"
+                )));
+            }
+        }
+        if let Some(e) = self.llm.endpoint.as_deref() {
+            if e.contains('?') || e.contains('#') || has_control(e) {
+                return bad("llm.endpoint may not contain a query or fragment");
+            }
+        }
+        for v in [self.llm.provider.as_deref(), self.llm.model.as_deref()].into_iter().flatten() {
+            if has_control(v) || v.len() > 200 {
+                return bad("llm.provider and llm.model must be short, single-line values");
+            }
         }
         Ok(())
     }
 
     /// Build a minimal manifest for a bare HTML file (used by `deskhatch install page.html`).
     pub fn for_html(name: &str) -> Manifest {
+        let name = clean_name(name);
         Manifest {
             schema: 1,
-            id: slugify(name),
-            name: name.to_string(),
+            id: slugify(&name),
+            name,
             version: d_version(),
             description: None,
             icon: d_icon(),

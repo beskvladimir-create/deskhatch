@@ -18,6 +18,7 @@ pub struct Resolved {
     pub key_allowed: bool,
 }
 
+#[allow(dead_code)]
 /// True for http(s) URLs on this machine: localhost, 127.0.0.0/8 and ::1.
 pub fn is_loopback(url: &str) -> bool {
     let Ok(u) = reqwest::Url::parse(url) else { return false };
@@ -71,10 +72,14 @@ fn default_model(provider: &str) -> &'static str {
 pub fn resolve(m: Option<&Manifest>, override_model: Option<&str>) -> Resolved {
     let cfg = store::load_config();
     let app = m.map(|m| &m.llm);
+    let user_provider = cfg.provider.clone().unwrap_or_else(|| "ollama".into());
+    // An app may pick a provider only among those the user set up (their default, or one they
+    // configured with `deskhatch config --provider`): otherwise a web page could spend the
+    // user's paid key on a provider they never chose for it.
     let provider = app
         .and_then(|l| l.provider.clone())
-        .or_else(|| cfg.provider.clone())
-        .unwrap_or_else(|| "ollama".into());
+        .filter(|p| p == &user_provider || cfg.providers.contains_key(p))
+        .unwrap_or(user_provider);
     let pc = cfg.providers.get(&provider);
     let user_endpoints: Vec<String> = [
         pc.and_then(|p| p.endpoint.clone()),
@@ -85,11 +90,14 @@ pub fn resolve(m: Option<&Manifest>, override_model: Option<&str>) -> Resolved {
     .flatten()
     .map(|e| norm(&e))
     .collect();
+    // An endpoint from app.json is used only when it is exactly one the user configured or the
+    // provider's built-in one. Anything else, local addresses included, could reach other
+    // services on this machine.
     let app_endpoint = app.and_then(|l| l.endpoint.clone()).map(|e| norm(&e)).filter(|e| {
-        let ok = is_loopback(e) || user_endpoints.iter().any(|u| u == e);
+        let ok = user_endpoints.iter().any(|u| u == e);
         if !ok {
             eprintln!(
-                "deskhatch: ignoring the model endpoint {e} from app.json; only endpoints on this machine or ones you configured are used"
+                "deskhatch: ignoring the model endpoint {e} from app.json; only endpoints you configured are used"
             );
         }
         ok
@@ -184,6 +192,7 @@ pub async fn chat(
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| e.to_string())?;
     let mut req = client
@@ -210,7 +219,10 @@ pub async fn chat(
         } else {
             String::new()
         };
-        return Err(format!("{status}{hint}: {}", text.chars().take(500).collect::<String>()));
+        // Only a short, printable excerpt reaches the page.
+        let excerpt: String = text.chars().filter(|c| !c.is_control()).take(200).collect();
+        eprintln!("deskhatch: model endpoint answered {status}: {excerpt}");
+        return Err(format!("the model endpoint answered {status}{hint}"));
     }
     let v: Value = serde_json::from_str(&text).map_err(|e| format!("bad JSON from model: {e}"))?;
     let content = v["choices"][0]["message"]["content"]
@@ -229,7 +241,11 @@ pub async fn chat(
 /// List models from the endpoint (GET /models), best effort.
 pub async fn models(m: Option<&Manifest>) -> Result<Vec<String>, String> {
     let r = resolve(m, None);
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?;
     let mut req = client.get(format!("{}/models", r.endpoint));
     if r.key_allowed {
         if let Some(k) = store::get_api_key(&r.provider) {
@@ -278,16 +294,22 @@ mod tests {
         )
         .unwrap();
         let r = resolve(Some(&m), None);
-        assert_eq!(r.endpoint, "https://api.openai.com/v1", "a foreign endpoint from app.json must be ignored");
-        assert!(r.key_allowed, "the key may go to the provider's own endpoint");
+        assert_ne!(r.endpoint, "https://attacker.example/v1", "a foreign endpoint from app.json must be ignored");
+        assert!(r.key_allowed, "the key may go to the user's own endpoint");
 
         let local: Manifest = serde_json::from_str(
             r#"{"id":"t","name":"t","llm":{"provider":"openai","endpoint":"http://localhost:9999/v1"}}"#,
         )
         .unwrap();
         let r = resolve(Some(&local), None);
-        assert_eq!(r.endpoint, "http://localhost:9999/v1");
-        assert!(!r.key_allowed, "an endpoint the user did not configure never gets the key");
+        assert_ne!(r.endpoint, "http://localhost:9999/v1", "a local endpoint the user did not configure is ignored too");
+        let ssrf: Manifest = serde_json::from_str(
+            r#"{"id":"t","name":"t","llm":{"endpoint":"http://127.0.0.1:8765/admin/secret"}}"#,
+        )
+        .unwrap();
+        assert_eq!(resolve(Some(&ssrf), None).endpoint, "http://localhost:11434/v1");
+        let paid: Manifest = serde_json::from_str(r#"{"id":"t","name":"t","llm":{"provider":"openai"}}"#).unwrap();
+        assert_eq!(resolve(Some(&paid), None).provider, "ollama", "an app cannot switch to a provider the user did not set up");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -1,6 +1,6 @@
 //! Importing, exporting and installing app packages, and creating OS launchers.
 
-use crate::manifest::{slugify, Manifest, Tier};
+use crate::manifest::{clean_name, slugify, Manifest, Tier};
 use crate::store;
 use std::fs;
 use std::io::{Read, Write};
@@ -40,7 +40,59 @@ pub struct Installed {
 /// A package that replaces an installed app with the same id must not inherit the folders the
 /// user granted to the old one.
 fn forget_grants(id: &str) {
+    forget_app_state(id);
+}
+
+/// Everything deskhatch keeps about an app outside its package: folder grants, its store, its
+/// web data (localStorage, IndexedDB, caches), the per-install origin and where it came from.
+/// Removed on uninstall and whenever another package takes over the id.
+pub fn forget_app_state(id: &str) {
     let _ = fs::remove_file(store::grants_file(id));
+    let _ = fs::remove_dir_all(store::data_dir(id));
+    let _ = fs::remove_dir_all(store::root().join("webdata").join(id));
+    let _ = fs::remove_file(store::root().join("origins").join(id));
+    let _ = fs::remove_file(source_mark(id));
+}
+
+/// The origin host of an app's pages, `app-<id>-<nonce>`. The nonce is new for every install,
+/// so a later app with the same id never sees the web data of an earlier one.
+pub fn origin_host(id: &str) -> String {
+    let f = store::root().join("origins").join(id);
+    let nonce = fs::read_to_string(&f).ok().map(|s| s.trim().to_string()).filter(|s| {
+        s.len() == 16 && s.chars().all(|c| c.is_ascii_hexdigit())
+    });
+    let nonce = nonce.unwrap_or_else(|| {
+        let mut b = [0u8; 8];
+        let ok = fs::File::open("/dev/urandom").and_then(|mut r| r.read_exact(&mut b)).is_ok();
+        if !ok {
+            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+            b = ((t as u64) ^ (std::process::id() as u64).rotate_left(32)).to_le_bytes();
+        }
+        let n: String = b.iter().map(|x| format!("{x:02x}")).collect();
+        let _ = fs::create_dir_all(f.parent().unwrap());
+        let _ = fs::write(&f, &n);
+        n
+    });
+    format!("app-{id}-{nonce}")
+}
+
+/// Where an app was installed from, kept outside the package so a package cannot bring its own.
+fn source_mark(id: &str) -> PathBuf {
+    store::root().join("sources").join(id)
+}
+
+/// The folder an installed app was copied from, if it came from a folder.
+fn installed_source(id: &str) -> Option<PathBuf> {
+    fs::read_to_string(source_mark(id)).ok().map(|s| PathBuf::from(s.trim()))
+}
+
+/// True when installing `src` would replace an app that came from somewhere else.
+pub fn replaces_other(id: &str, src: &Path) -> bool {
+    if !store::app_dir(id).exists() {
+        return false;
+    }
+    let src = src.canonicalize().unwrap_or_else(|_| src.to_path_buf());
+    installed_source(id).as_deref() != Some(src.as_path())
 }
 
 /// Read the manifest of a package without installing it, so the caller can show the user what
@@ -54,6 +106,8 @@ pub fn peek(source: &Path) -> Result<Option<Manifest>> {
     }
     let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     if ext == "hatch" || ext == "zip" {
+        // Unpack exactly as the install will, and read the manifest from the unpacked tree, so
+        // the dialog shows what will really be installed. Nothing leaves the staging folder.
         store::ensure_dirs()?;
         let tmp = store::root().join("tmp").join(format!("peek-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
@@ -72,16 +126,19 @@ pub fn peek(source: &Path) -> Result<Option<Manifest>> {
         let _ = fs::remove_dir_all(&tmp);
         return Ok(Some(res?));
     }
-    Ok(None)
+    if ext == "html" || ext == "htm" {
+        return Ok(None);
+    }
+    Err(PkgError::Other(format!("unsupported source {}", src.display())))
 }
 
 /// What the user must approve before this package is installed, or `None` when there is
 /// nothing to approve (a `web` app that replaces nothing and names no model endpoint).
-pub fn install_warning(m: &Manifest) -> Option<String> {
+pub fn install_warning(m: &Manifest, src: &Path) -> Option<String> {
     let mut lines = vec![];
     match m.permissions {
         Tier::Full => lines.push(
-            "Permission: FULL. It can read and change files anywhere in your home folder.".to_string(),
+            "Permission: FULL. It can read and change files in your home folder, so it can also get programs run on your behalf. Give this only to apps you wrote or fully trust.".to_string(),
         ),
         Tier::Desktop => lines.push(
             "Permission: DESKTOP. Notifications, tray, hotkeys, and the folders you pick for it.".to_string(),
@@ -89,26 +146,31 @@ pub fn install_warning(m: &Manifest) -> Option<String> {
         Tier::Web => {}
     }
     if m.permissions >= Tier::Desktop && !m.allowed_hosts.is_empty() {
-        lines.push(format!("It can connect to: {}", m.allowed_hosts.join(", ")));
+        let hosts: Vec<String> = m.allowed_hosts.iter().map(|h| clean_name(h)).collect();
+        lines.push(format!("It can connect to: {}", hosts.join(", ")));
     }
-    if let Some(e) = m.llm.endpoint.as_deref() {
+    if let Some(e) = m.llm.endpoint.as_deref().map(clean_name) {
         lines.push(format!(
             "It names a model endpoint: {e}. deskhatch uses it only if it is on this computer or one you configured, and never sends your API key to it otherwise."
         ));
     }
-    if store::app_dir(&m.id).exists() {
+    if replaces_other(&m.id, src) {
         lines.push(format!(
-            "It replaces the installed app with id \"{}\". Folder access given to that app is removed.",
+            "It replaces the installed app with id \"{}\". That app's saved data and folder access are deleted.",
             m.id
         ));
+    }
+    if !m.hotkeys.is_empty() {
+        let keys: Vec<String> = m.hotkeys.values().map(|s| clean_name(s)).collect();
+        lines.push(format!("Global hotkeys: {}", keys.join(", ")));
     }
     if lines.is_empty() {
         return None;
     }
     Some(format!(
         "Install \"{}\" {}?\n\n{}\n\nOnly install apps from people you trust. You can read its index.html first.",
-        m.name,
-        m.version,
+        clean_name(&m.name),
+        clean_name(&m.version),
         lines.join("\n")
     ))
 }
@@ -123,11 +185,17 @@ pub fn import(source: &Path, name_override: Option<&str>) -> Result<Manifest> {
         let m = Manifest::load(&src)?;
         let dest = store::app_dir(&m.id);
         if dest.exists() && dest.canonicalize().ok().as_deref() != Some(&src) {
+            let same_source = !replaces_other(&m.id, &src);
             fs::remove_dir_all(&dest)?;
-            forget_grants(&m.id);
+            if !same_source {
+                forget_grants(&m.id);
+            }
         }
         if dest.canonicalize().ok().as_deref() != Some(&src) {
             copy_dir(&src, &dest)?;
+            let mark = source_mark(&m.id);
+            let _ = fs::create_dir_all(mark.parent().unwrap());
+            let _ = fs::write(&mark, src.to_string_lossy().as_bytes());
         }
         ensure_icon(&dest, &m);
         return Ok(rename_installed(&dest, m, name_override));
@@ -156,8 +224,9 @@ pub fn import(source: &Path, name_override: Option<&str>) -> Result<Manifest> {
         let dest = store::app_dir(&m.id);
         if dest.exists() {
             fs::remove_dir_all(&dest)?;
-            forget_grants(&m.id);
         }
+        // A .hatch always starts clean: no data, grants or web data from a previous app.
+        forget_app_state(&m.id);
         copy_dir(&root, &dest)?;
         let _ = fs::remove_dir_all(&tmp);
         ensure_icon(&dest, &m);
@@ -176,13 +245,14 @@ pub fn import(source: &Path, name_override: Option<&str>) -> Result<Manifest> {
         let title = html_title(&fs::read_to_string(&src)?).unwrap_or(stem);
         let mut m = Manifest::for_html(&title);
         if let Some(n) = name_override {
-            m.name = n.to_string();
-            m.id = slugify(n);
+            m.name = clean_name(n);
+            m.id = slugify(&m.name);
         }
+        // A bare page never replaces an installed app (it would inherit its data): it gets a
+        // free id instead.
+        m.id = free_id(&m.id);
+        forget_app_state(&m.id);
         let dest = store::app_dir(&m.id);
-        if dest.exists() {
-            fs::remove_dir_all(&dest)?;
-        }
         fs::create_dir_all(&dest)?;
         fs::copy(&src, dest.join("index.html"))?;
         fs::write(dest.join("app.json"), serde_json::to_vec_pretty(&m).unwrap())?;
@@ -226,6 +296,18 @@ fn ensure_icon(dir: &Path, m: &Manifest) {
     }
 }
 
+/// `base`, or `base-2`, `base-3`… when an app with that id is already installed.
+pub fn free_id(base: &str) -> String {
+    if !store::app_dir(base).exists() {
+        return base.to_string();
+    }
+    let stem: String = base.chars().take(58).collect();
+    (2..10_000)
+        .map(|n| format!("{stem}-{n}"))
+        .find(|id| !store::app_dir(id).exists())
+        .unwrap_or_else(|| format!("{stem}-{}", std::process::id()))
+}
+
 fn html_title(html: &str) -> Option<String> {
     let lower = html.to_ascii_lowercase();
     let s = lower.find("<title")?;
@@ -235,7 +317,7 @@ fn html_title(html: &str) -> Option<String> {
     if t.is_empty() {
         None
     } else {
-        Some(t.chars().take(60).collect())
+        Some(clean_name(t))
     }
 }
 
@@ -281,8 +363,7 @@ pub fn uninstall(id: &str) -> Result<()> {
     if dir.exists() {
         fs::remove_dir_all(&dir)?;
     }
-    let _ = fs::remove_file(store::grants_file(id));
-    let _ = fs::remove_dir_all(store::data_dir(id));
+    forget_app_state(id);
     Ok(())
 }
 
@@ -335,7 +416,14 @@ pub fn launcher_path(m: &Manifest) -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let apps = dirs::home_dir()?.join("Applications");
-        Some(apps.join(format!("{}.app", safe_name(&m.name))))
+        let base = apps.join(format!("{}.app", safe_name(&m.name)));
+        // A bundle with that name that belongs to another app (or is not ours at all) is never
+        // overwritten: this app gets "<Name> (<id>).app" instead.
+        let taken = base.exists() && bundle_owner(&base).as_deref() != Some(m.id.as_str());
+        if taken || safe_name(&m.name).trim().eq_ignore_ascii_case("deskhatch") {
+            return Some(apps.join(format!("{} ({}).app", safe_name(&m.name), m.id)));
+        }
+        Some(base)
     }
     #[cfg(target_os = "linux")]
     {
@@ -350,6 +438,16 @@ pub fn launcher_path(m: &Manifest) -> Option<PathBuf> {
         let _ = m;
         None
     }
+}
+
+/// The deskhatch app id a macOS bundle was made for, read from its Info.plist.
+#[allow(dead_code)]
+fn bundle_owner(bundle: &Path) -> Option<String> {
+    let plist = fs::read_to_string(bundle.join("Contents").join("Info.plist")).ok()?;
+    let key = "tech.besk.deskhatch.app.";
+    let i = plist.find(key)? + key.len();
+    let id: String = plist[i..].chars().take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-').collect();
+    (!id.is_empty()).then_some(id)
 }
 
 #[allow(dead_code)]
@@ -650,9 +748,9 @@ pub fn create_launcher(m: &Manifest) -> Result<PathBuf> {
         };
         let desktop = format!(
             "[Desktop Entry]\nType=Application\nName={name}\nComment={comment}\nExec={exe} --app {id}\nIcon={icon}\nTerminal=false\nCategories=Utility;\nStartupWMClass=deskhatch-{id}\n",
-            name = m.name,
-            comment = m.description.clone().unwrap_or_default(),
-            exe = shell_quote(&exe.to_string_lossy()),
+            name = desktop_escape(&m.name),
+            comment = desktop_escape(&m.description.clone().unwrap_or_default()),
+            exe = desktop_exec_quote(&exe.to_string_lossy()),
             id = m.id,
             icon = icon_field,
         );
@@ -685,6 +783,32 @@ fn xml_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// A value for a .desktop file key: one line, no control characters, backslashes escaped.
+#[allow(dead_code)]
+fn desktop_escape(s: &str) -> String {
+    let one_line: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).take(200).collect();
+    one_line.replace('\\', "\\\\")
+}
+
+/// An argument for the Exec key, quoted the way the Desktop Entry spec wants.
+#[allow(dead_code)]
+fn desktop_exec_quote(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' | '`' | '$' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '%' => out.push_str("%%"),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn shell_quote(s: &str) -> String {
@@ -853,11 +977,16 @@ fn walk(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
         for e in fs::read_dir(&d)? {
-            let p = e?.path();
+            let e = e?;
+            let p = e.path();
             if p.file_name().and_then(|n| n.to_str()) == Some(".DS_Store") {
                 continue;
             }
-            if p.is_dir() {
+            let ft = e.file_type()?;
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
                 stack.push(p.clone());
             }
             out.push(p);
@@ -873,9 +1002,13 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
         let e = e?;
         let p = e.path();
         let t = dst.join(e.file_name());
-        if p.is_dir() {
+        // Never follow links: a link in a package could point at ~/.ssh or at the home folder.
+        let ft = e.file_type()?;
+        if ft.is_symlink() {
+            eprintln!("deskhatch: skipped the link {} in the package", p.display());
+        } else if ft.is_dir() {
             copy_dir(&p, &t)?;
-        } else {
+        } else if ft.is_file() {
             fs::copy(&p, &t)?;
         }
     }
@@ -883,17 +1016,36 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 fn unzip_to(archive: &Path, dest: &Path) -> Result<()> {
+    const MAX_BYTES: u64 = 200 * 1024 * 1024;
+    const MAX_ENTRIES: usize = 5000;
     let f = fs::File::open(archive)?;
     let mut z = zip::ZipArchive::new(f)?;
-    let total: u64 = (0..z.len()).map(|i| z.by_index(i).map(|e| e.size()).unwrap_or(0)).sum();
-    if total > 200 * 1024 * 1024 {
-        return Err(PkgError::Other("package larger than 200 MB".into()));
+    if z.len() > MAX_ENTRIES {
+        return Err(PkgError::Other(format!("package has more than {MAX_ENTRIES} files")));
     }
+    let mut written: u64 = 0;
+    let mut seen = std::collections::HashSet::new();
     for i in 0..z.len() {
         let mut entry = z.by_index(i)?;
+        // Names with "." or ".." parts, backslashes, or two entries that would land on the same
+        // file (here or on a case-insensitive disk) make the package ambiguous: refuse it.
+        let raw = entry.name().to_string();
+        if raw.contains('\\') || raw.split('/').any(|c| c == "." || c == "..") {
+            return Err(PkgError::Other(format!("package entry {raw:?} is not allowed")));
+        }
+        if !seen.insert(raw.trim_end_matches('/').to_lowercase()) {
+            return Err(PkgError::Other(format!("package has two entries named {raw:?}")));
+        }
         let Some(rel) = entry.enclosed_name() else {
-            continue; // zip-slip protection
+            return Err(PkgError::Other(format!("package entry {raw:?} is not allowed")));
         };
+        if rel.components().count() > 32 {
+            return Err(PkgError::Other("package nests folders too deep".into()));
+        }
+        // Links are not unpacked at all.
+        if entry.unix_mode().is_some_and(|m| m & 0o170000 == 0o120000) {
+            continue;
+        }
         let out = dest.join(rel);
         if entry.is_dir() {
             fs::create_dir_all(&out)?;
@@ -902,7 +1054,15 @@ fn unzip_to(archive: &Path, dest: &Path) -> Result<()> {
                 fs::create_dir_all(p)?;
             }
             let mut w = fs::File::create(&out)?;
-            std::io::copy(&mut entry, &mut w)?;
+            // Count what is actually written: the sizes in the archive's headers can lie.
+            let left = MAX_BYTES - written;
+            let n = std::io::copy(&mut (&mut entry).take(left + 1), &mut w)?;
+            written += n;
+            if written > MAX_BYTES {
+                drop(w);
+                let _ = fs::remove_dir_all(dest);
+                return Err(PkgError::Other("package larger than 200 MB".into()));
+            }
         }
     }
     Ok(())

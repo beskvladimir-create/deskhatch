@@ -7,6 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const https = require('https');
+const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
 
 const pkg = require('../package.json');
@@ -59,6 +60,31 @@ function download(url, dest, redirects = 0) {
   });
 }
 
+function sha256(file) {
+  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+/// The checksum the downloaded runtime must have. Preferred: the list shipped inside this npm
+/// package (written at publish time from the signed release). Otherwise the release's own
+/// SHA256SUMS.txt. A custom DESKHATCH_RUNTIME_URL must come with DESKHATCH_RUNTIME_SHA256.
+async function expectedSum(asset) {
+  if (process.env.DESKHATCH_RUNTIME_URL) {
+    const s = (process.env.DESKHATCH_RUNTIME_SHA256 || '').trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(s)) fail('DESKHATCH_RUNTIME_URL needs DESKHATCH_RUNTIME_SHA256 (the sha256 of that file)');
+    return s;
+  }
+  try {
+    const shipped = require('./checksums.json');
+    if (shipped && shipped.version === VERSION && shipped.files && shipped.files[asset]) return shipped.files[asset];
+  } catch (_) { /* not shipped: fall back to the release's list */ }
+  const tmp = path.join(RUNTIME_DIR, 'SHA256SUMS.txt.part');
+  await download(`https://github.com/${REPO}/releases/download/v${VERSION}/SHA256SUMS.txt`, tmp);
+  const line = fs.readFileSync(tmp, 'utf8').split('\n').map((l) => l.trim().split(/\s+/)).find((p) => p[1] === asset);
+  fs.rmSync(tmp, { force: true });
+  if (!line || !/^[0-9a-f]{64}$/.test(line[0])) fail(`the release has no checksum for ${asset}; not installing an unverified runtime`);
+  return line[0];
+}
+
 async function ensureRuntime({ force = false } = {}) {
   const bin = binaryPath();
   if (!bin) {
@@ -76,6 +102,18 @@ async function ensureRuntime({ force = false } = {}) {
   } catch (e) {
     fail(`could not download the runtime: ${e.message}\n` +
       `If this version has no release yet, build it yourself: see https://github.com/${REPO}#build-from-source`);
+  }
+  let want;
+  try {
+    want = await expectedSum(asset);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    fail(`could not get the runtime checksum: ${e.message}`);
+  }
+  const got = sha256(tmp);
+  if (got !== want) {
+    fs.rmSync(tmp, { force: true });
+    fail(`the downloaded runtime does not match its checksum (expected ${want}, got ${got}); not installing it`);
   }
   if (process.platform === 'darwin') {
     fs.rmSync(path.join(RUNTIME_DIR, 'Deskhatch.app'), { recursive: true, force: true });

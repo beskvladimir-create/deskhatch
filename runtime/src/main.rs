@@ -14,6 +14,7 @@ mod commands;
 mod gen;
 mod llm;
 mod manifest;
+mod netguard;
 mod packages;
 mod store;
 
@@ -28,6 +29,132 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, Windo
 
 const GALLERY_HTML: &str = include_str!("../gallery/index.html");
 const SHIM_JS: &str = include_str!("../gallery/hatch.js");
+
+/// Runs in every frame before the page: removes WebRTC (a way out that the content-security-
+/// policy does not cover) and drops resource hints (preconnect, dns-prefetch, prerender) that
+/// open connections and DNS lookups on their own.
+const GUARD_JS: &str = r#"(() => {
+  for (const k of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'RTCDataChannel', 'RTCIceCandidate', 'RTCSessionDescription', 'RTCRtpSender', 'RTCRtpReceiver']) {
+    try { Object.defineProperty(window, k, { value: undefined, writable: false, configurable: false }); } catch (e) {}
+  }
+  const bad = /(^|\s)(preconnect|dns-prefetch|prerender|prefetch|preload|modulepreload)(\s|$)/i;
+  const strip = (n) => { if (n && n.tagName === 'LINK' && bad.test(n.getAttribute('rel') || '')) n.remove(); };
+  new MutationObserver((ms) => {
+    for (const m of ms) {
+      if (m.type === 'attributes') strip(m.target);
+      for (const n of m.addedNodes || []) {
+        if (n.nodeType === 1) { strip(n); if (n.querySelectorAll) n.querySelectorAll('link').forEach(strip); }
+      }
+    }
+  }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['rel'] });
+})();"#;
+
+#[cfg(target_os = "macos")]
+fn macos_major() -> u32 {
+    std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|v| v.trim().split('.').next().and_then(|x| x.parse().ok()))
+        .unwrap_or(0)
+}
+
+#[cfg(target_os = "macos")]
+fn store_id_for(host: &str) -> [u8; 16] {
+    use std::hash::{Hash, Hasher};
+    let mut out = [0u8; 16];
+    for (i, salt) in [0u64, 1].iter().enumerate() {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (salt, host).hash(&mut h);
+        out[i * 8..i * 8 + 8].copy_from_slice(&h.finish().to_le_bytes());
+    }
+    out
+}
+
+/// Switch WebRTC off in the window's WebKit preferences (a private but long-standing setter,
+/// called only if this WebKit has it).
+#[cfg(target_os = "macos")]
+fn disable_webrtc(w: &tauri::WebviewWindow) {
+    let _ = w.with_webview(|pv| unsafe {
+        use objc2::runtime::{AnyObject, Bool};
+        use objc2::{msg_send, sel};
+        let wk = pv.inner() as *mut AnyObject;
+        if wk.is_null() {
+            return;
+        }
+        let cfg: *mut AnyObject = msg_send![&*wk, configuration];
+        if cfg.is_null() {
+            return;
+        }
+        let prefs: *mut AnyObject = msg_send![&*cfg, preferences];
+        if prefs.is_null() {
+            return;
+        }
+        let ok: Bool = msg_send![&*prefs, respondsToSelector: sel!(_setPeerConnectionEnabled:)];
+        if ok.as_bool() {
+            let _: () = msg_send![&*prefs, _setPeerConnectionEnabled: Bool::NO];
+        } else {
+            eprintln!("deskhatch: this WebKit has no switch for WebRTC");
+        }
+    });
+}
+
+/// Neutralise resource hints in served HTML before the parser's preload scanner sees them.
+fn defuse_hints(html: &[u8]) -> Vec<u8> {
+    let s = String::from_utf8_lossy(html).into_owned();
+    let lower = s.to_ascii_lowercase();
+    if lower.len() != s.len() {
+        return html.to_vec();
+    }
+    let b = lower.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while let Some(off) = lower[i..].find("<link") {
+        let start = i + off;
+        // Find the end of the tag, skipping quoted attribute values (they may contain '>').
+        let mut j = start + 5;
+        let mut quote: Option<u8> = None;
+        while j < b.len() {
+            match (quote, b[j]) {
+                (Some(q), c) if c == q => quote = None,
+                (None, b'"') | (None, b'\'') => quote = Some(b[j]),
+                (None, b'>') => break,
+                _ => {}
+            }
+            j += 1;
+        }
+        let end = (j + 1).min(b.len());
+        out.push_str(&s[i..start]);
+        if !link_is_hint(&lower[start..end]) {
+            out.push_str(&s[start..end]);
+        }
+        i = end;
+    }
+    out.push_str(&s[i..]);
+    out.into_bytes()
+}
+
+/// True when a lower-cased `<link ...>` tag has a rel that opens connections on its own.
+fn link_is_hint(tag: &str) -> bool {
+    let hints = ["preconnect", "dns-prefetch", "prerender", "prefetch", "preload", "modulepreload"];
+    let mut rest = tag;
+    while let Some(p) = rest.find("rel") {
+        let before_ok = p == 0 || !rest.as_bytes()[p - 1].is_ascii_alphanumeric() && rest.as_bytes()[p - 1] != b'-';
+        let after = rest[p + 3..].trim_start();
+        if before_ok && after.starts_with('=') {
+            let v = after[1..].trim_start();
+            let value = if let Some(q) = v.chars().next().filter(|c| *c == '"' || *c == '\'') {
+                v[1..].split(q).next().unwrap_or("")
+            } else {
+                v.split(|c: char| c.is_whitespace() || c == '>' || c == '/').next().unwrap_or("")
+            };
+            return value.split_whitespace().any(|t| hints.contains(&t));
+        }
+        rest = &rest[p + 3..];
+    }
+    false
+}
 
 /// Test-only: the expression `--eval` runs inside the window, see `schedule_test_eval`.
 static TEST_EVAL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -55,7 +182,7 @@ fn confirm_in_terminal(warning: &str) -> bool {
 fn install_with_consent(app: AppHandle, p: PathBuf) {
     std::thread::spawn(move || {
         let warning = match packages::peek(&p) {
-            Ok(Some(m)) => packages::install_warning(&m),
+            Ok(Some(m)) => packages::install_warning(&m, &p),
             Ok(None) => None,
             Err(e) => {
                 eprintln!("deskhatch: cannot open {}: {e}", p.display());
@@ -175,12 +302,16 @@ fn main() {
         Some("install") => {
             let src = args.get(1).cloned().unwrap_or_else(|| usage());
             let name = flag(&args, "--name");
-            if let Ok(Some(peeked)) = packages::peek(Path::new(&src)) {
-                if let Some(w) = packages::install_warning(&peeked) {
-                    if !has(&args, "--yes") && !confirm_in_terminal(&w) {
-                        fatal("not installed");
+            match packages::peek(Path::new(&src)) {
+                Ok(Some(peeked)) => {
+                    if let Some(w) = packages::install_warning(&peeked, Path::new(&src)) {
+                        if !has(&args, "--yes") && !confirm_in_terminal(&w) {
+                            fatal("not installed");
+                        }
                     }
                 }
+                Ok(None) => {}
+                Err(e) => fatal(&e.to_string()),
             }
             let m = packages::import(Path::new(&src), name.as_deref()).unwrap_or_else(|e| fatal(&e.to_string()));
             println!("installed {} ({}) -> {}", m.name, m.id, store::app_dir(&m.id).display());
@@ -322,7 +453,11 @@ fn main() {
             if p.exists() {
                 // Opened from a file manager: anything that asks for more than `web` is shown to
                 // the user in a dialog first, from the gallery.
-                let needs_ok = matches!(packages::peek(p), Ok(Some(ref pm)) if packages::install_warning(pm).is_some());
+                let needs_ok = match packages::peek(p) {
+                    Ok(Some(pm)) => packages::install_warning(&pm, p).is_some(),
+                    Ok(None) => false,
+                    Err(e) => fatal(&e.to_string()),
+                };
                 if needs_ok {
                     let _ = PENDING_INSTALL.set(p.to_path_buf());
                     run_gui(None, false);
@@ -423,7 +558,26 @@ fn claim_socket(id: &str) -> PathBuf {
         h ^= *b as u64;
         h = h.wrapping_mul(0x100_0000_01b3);
     }
-    std::env::temp_dir().join(format!("deskhatch-{h:016x}.sock"))
+    // A folder only this user can enter, so another account on the machine cannot take the
+    // socket first. XDG_RUNTIME_DIR is already private; otherwise a 0700 folder under /tmp.
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(|| {
+            #[cfg(unix)]
+            let uid = unsafe { libc::getuid() };
+            #[cfg(not(unix))]
+            let uid = 0;
+            let d = std::env::temp_dir().join(format!("deskhatch-{uid}"));
+            let _ = std::fs::create_dir_all(&d);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700));
+            }
+            d
+        });
+    base.join(format!("deskhatch-{h:016x}.sock"))
 }
 
 fn ids() -> Vec<String> {
@@ -473,7 +627,21 @@ pub fn spawn_app(id: &str) -> std::io::Result<()> {
 fn run_gui(app_dir: Option<PathBuf>, dev: bool) {
     #[cfg(unix)]
     sigpipe(libc::SIG_IGN);
-    let manifest = app_dir.as_ref().map(|d| Manifest::load(d).unwrap_or_else(|e| fatal(&e.to_string())));
+    let mut manifest = app_dir.as_ref().map(|d| Manifest::load(d).unwrap_or_else(|e| fatal(&e.to_string())));
+    if dev {
+        if let Some(m) = manifest.as_mut() {
+            // A folder run with --dev may come from anywhere: it says what it wants, and it never
+            // shares data or folder access with an installed app of the same id.
+            let dev_id: String = format!("dev-{}", m.id).chars().take(64).collect();
+            let probe = Manifest { id: dev_id.clone(), ..m.clone() };
+            if let Some(w) = packages::install_warning(&probe, app_dir.as_deref().unwrap()) {
+                if !std::env::args().any(|a| a == "--yes") && !confirm_in_terminal(&w.replacen("Install", "Run", 1)) {
+                    fatal("not started");
+                }
+            }
+            m.id = dev_id;
+        }
+    }
     let mut claimed: Option<ClaimListener> = None;
     if !dev {
         if let Some(m) = manifest.as_ref() {
@@ -508,6 +676,7 @@ fn run_gui(app_dir: Option<PathBuf>, dev: bool) {
             commands::about,
             commands::quit,
             commands::window_toggle,
+            commands::window_set_always_on_top,
             commands::store_get,
             commands::store_set,
             commands::store_all,
@@ -587,23 +756,71 @@ fn load_icon(path: &Path) -> Option<tauri::image::Image<'static>> {
 
 fn setup_app(app: &mut tauri::App, m: Manifest, dir: PathBuf, dev: bool) -> tauri::Result<()> {
     let icon = load_icon(&dir.join(&m.icon));
-    let mut wb = WebviewWindowBuilder::new(app, "main", WebviewUrl::CustomProtocol("hatch://localhost/".parse().unwrap()))
+    // Every app gets an origin of its own, so one app cannot read another's localStorage,
+    // IndexedDB or caches, and on Linux and Windows a web-data folder of its own too.
+    let host = packages::origin_host(&m.id);
+    let origin_host = host.clone();
+    // A web-tier window keeps its frame and cannot sit over everything or cover the screen.
+    let web = m.permissions == Tier::Web;
+    let page_url: tauri::Url = format!("hatch://{host}/").parse().unwrap();
+    // macOS: the window opens on about:blank, WebRTC is switched off in its preferences, and
+    // only then does it load the app, so no app code ever runs with WebRTC available.
+    #[cfg(target_os = "macos")]
+    let first_url = WebviewUrl::External("about:blank".parse().unwrap());
+    #[cfg(not(target_os = "macos"))]
+    let first_url = WebviewUrl::CustomProtocol(page_url.clone());
+    let mut wb = WebviewWindowBuilder::new(app, "main", first_url)
         .title(&m.name)
-        .inner_size(m.window.width, m.window.height)
+        .inner_size(m.window.width.clamp(200.0, 3000.0), m.window.height.clamp(150.0, 2000.0))
         .resizable(m.window.resizable)
-        .always_on_top(m.window.always_on_top)
-        .decorations(m.window.decorations)
+        .always_on_top(m.window.always_on_top && !web)
+        .decorations(m.window.decorations || web)
+        .initialization_script_for_all_frames(GUARD_JS)
         .initialization_script(SHIM_JS)
-        .on_navigation(page_may_navigate)
+        .on_navigation(move |u| page_may_navigate(u, &origin_host))
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
     if let (Some(w), Some(h)) = (m.window.min_width, m.window.min_height) {
-        wb = wb.min_inner_size(w, h);
+        wb = wb.min_inner_size(w.clamp(100.0, 3000.0), h.clamp(100.0, 2000.0));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        wb = wb.data_directory(store::root().join("webdata").join(&m.id));
+    }
+    // All of the window's network traffic goes through a local proxy that lets through only the
+    // hosts in allowedHosts (none for a web app). On macOS the webview supports a proxy from
+    // macOS 14; there each app also gets a web-data store of its own.
+    #[cfg(target_os = "macos")]
+    let guard_proxy = macos_major() >= 14;
+    #[cfg(not(target_os = "macos"))]
+    let guard_proxy = true;
+    if guard_proxy {
+        #[cfg(target_os = "macos")]
+        {
+            wb = wb.data_store_identifier(store_id_for(&host));
+        }
+        let allowed = if m.permissions >= Tier::Desktop { m.allowed_hosts.clone() } else { vec![] };
+        match netguard::start(allowed).ok().and_then(|u| u.parse().ok()) {
+            Some(u) => wb = wb.proxy_url(u),
+            None => {
+                eprintln!("deskhatch: could not start the network guard, not opening the app");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        eprintln!("deskhatch: macOS older than 14: the network guard proxy is not available, only the content-security-policy applies");
     }
     if let Some(ic) = icon.clone() {
         wb = wb.icon(ic)?;
     }
     let hide_on_close = m.tray.enabled && m.tray.hide_on_close;
     let window = wb.build()?;
+    #[cfg(target_os = "macos")]
+    {
+        disable_webrtc(&window);
+        let _ = window.navigate(page_url.clone());
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = &page_url;
 
     // macOS: a Help menu with "About deskhatch", so the runtime is discoverable from any app.
     #[cfg(target_os = "macos")]
@@ -718,9 +935,9 @@ fn setup_app(app: &mut tauri::App, m: Manifest, dir: PathBuf, dev: bool) -> taur
 /// A page may only navigate inside its own package. Without this, `location.href = "https://…"`
 /// or a meta refresh would carry data out past the content-security-policy, which only governs
 /// requests made from the page. External links go through `hatch.openUrl` (desktop tier and up).
-pub(crate) fn page_may_navigate(url: &tauri::Url) -> bool {
+pub(crate) fn page_may_navigate(url: &tauri::Url, own_host: &str) -> bool {
     match url.scheme() {
-        "hatch" => true,
+        "hatch" => url.host_str() == Some(own_host),
         // Windows and Android serve custom protocols as http://<scheme>.localhost.
         "http" | "https" => url.host_str() == Some("hatch.localhost"),
         "about" => url.path() == "blank",
@@ -733,12 +950,13 @@ fn setup_gallery(app: &mut tauri::App) -> tauri::Result<()> {
     if let Err(e) = packages::ensure_gallery_launcher() {
         eprintln!("deskhatch: could not put deskhatch in Applications: {e}");
     }
-    let w = WebviewWindowBuilder::new(app, "gallery", WebviewUrl::CustomProtocol("hatch://localhost/".parse().unwrap()))
+    let w = WebviewWindowBuilder::new(app, "gallery", WebviewUrl::CustomProtocol("hatch://gallery/".parse().unwrap()))
         .title("deskhatch")
         .inner_size(960.0, 680.0)
         .min_inner_size(640.0, 420.0)
         .initialization_script(SHIM_JS)
-        .on_navigation(page_may_navigate)
+        .initialization_script_for_all_frames(GUARD_JS)
+        .on_navigation(|u| page_may_navigate(u, "gallery"))
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
         .build()?;
     if let Some(js) = TEST_EVAL.get() {
@@ -841,7 +1059,7 @@ fn csp_for(m: Option<&Manifest>) -> String {
         if let Some(m) = m {
             for h in &m.allowed_hosts {
                 let src = if h == "*" {
-                    " https: http:".to_string()
+                    " https:".to_string()
                 } else if h.contains("://") {
                     format!(" {h}")
                 } else {
@@ -878,6 +1096,9 @@ fn serve(state: &AppCtx, request: tauri::http::Request<Vec<u8>>) -> tauri::http:
             } else if path.starts_with("icon/") {
                 // icon/<id> -> installed app icon
                 let id = path.trim_start_matches("icon/");
+                if !crate::manifest::valid_id(id) {
+                    return not_found(&csp);
+                }
                 match Manifest::load(&store::app_dir(id)).ok().and_then(|m| read_in(&store::app_dir(id), &m.icon)) {
                     Some(b) => (b, "image/png".into()),
                     None => return not_found(&csp),
@@ -888,10 +1109,12 @@ fn serve(state: &AppCtx, request: tauri::http::Request<Vec<u8>>) -> tauri::http:
         }
     };
 
+    let body = if mime.starts_with("text/html") { defuse_hints(&body) } else { body };
     tauri::http::Response::builder()
         .status(200)
         .header("content-type", mime)
         .header("Content-Security-Policy", csp)
+        .header("X-DNS-Prefetch-Control", "off")
         .header("Cache-Control", "no-cache")
         .header("Access-Control-Allow-Origin", "*")
         .body(Cow::Owned(body))
@@ -948,7 +1171,15 @@ fn percent_decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{csp_for, page_may_navigate};
+    use super::{csp_for, defuse_hints, page_may_navigate};
+
+    #[test]
+    fn resource_hints_are_removed_from_html() {
+        let html = br#"<head><link rel="preconnect" href="https://x.example"><LINK REL=dns-prefetch href=//y.example><link title="a>b" rel=preconnect href="https://z.example"><link rel="stylesheet" href="preload.css"></head>"#;
+        let out = String::from_utf8(defuse_hints(html)).unwrap();
+        assert!(!out.contains("x.example") && !out.contains("y.example") && !out.contains("z.example"), "{out}");
+        assert!(out.contains("preload.css"), "a stylesheet that merely mentions preload stays: {out}");
+    }
     use crate::manifest::Manifest;
 
     fn manifest(json: &str) -> Manifest {
@@ -971,13 +1202,15 @@ mod tests {
     }
 
     fn nav(u: &str) -> bool {
-        page_may_navigate(&u.parse().unwrap())
+        page_may_navigate(&u.parse().unwrap(), "app-notes")
     }
 
     #[test]
     fn page_stays_inside_its_package() {
-        assert!(nav("hatch://localhost/"));
-        assert!(nav("hatch://localhost/page2.html#x"));
+        assert!(nav("hatch://app-notes/"));
+        assert!(nav("hatch://app-notes/page2.html#x"));
+        assert!(!nav("hatch://app-other/"), "another app's origin");
+        assert!(!nav("hatch://gallery/"), "the gallery");
         assert!(nav("http://hatch.localhost/"));
         assert!(nav("about:blank"));
         assert!(!nav("https://example.com/?d=secret"));

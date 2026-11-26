@@ -59,13 +59,13 @@ pub async fn generate(
         .or_else(|| html_title(&html))
         .unwrap_or_else(|| "My App".into());
     let mut m = Manifest::for_html(&title);
-    m.id = slugify(&title);
+    // Never overwrite an installed app: it would inherit that app's data and folder access.
+    m.id = packages::free_id(&slugify(&m.name));
     m.permissions = tier;
-    m.description = Some(prompt.chars().take(200).collect());
+    m.description = Some(prompt.chars().map(|c| if c.is_control() { ' ' } else { c }).take(200).collect());
     m.llm.model = model.map(|s| s.to_string());
 
     let dir = store::app_dir(&m.id);
-    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     std::fs::write(dir.join("index.html"), html).map_err(|e| e.to_string())?;
     std::fs::write(dir.join("app.json"), serde_json::to_vec_pretty(&m).unwrap()).map_err(|e| e.to_string())?;
