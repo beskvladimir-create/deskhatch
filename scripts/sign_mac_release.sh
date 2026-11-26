@@ -7,15 +7,28 @@
 #
 # Needs, once, on the machine that holds the certificate:
 #   security find-identity -v -p codesigning            # the Developer ID Application identity
-#   xcrun notarytool store-credentials deskhatch --apple-id <Apple ID> --team-id <TEAMID>
+#   xcrun notarytool store-credentials <profile> --apple-id <Apple ID> --team-id <TEAMID>
 #
-# Usage: SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" scripts/sign_mac_release.sh v0.2.0
+# Usage: scripts/sign_mac_release.sh v0.2.0
+# The signing identity is read from the keychain when there is exactly one Developer ID
+# Application certificate; otherwise set SIGN_IDENTITY. The notarytool profile defaults to
+# pii-roundtrip, override with NOTARY_PROFILE.
 set -euo pipefail
 TAG="${1:?usage: sign_mac_release.sh <tag, e.g. v0.2.0>}"
 V="${TAG#v}"
 REPO="${REPO:-beskvladimir-create/deskhatch}"
-IDENTITY="${SIGN_IDENTITY:?set SIGN_IDENTITY to the Developer ID Application identity}"
-PROFILE="${NOTARY_PROFILE:-deskhatch}"
+IDENTITY="${SIGN_IDENTITY:-}"
+if [ -z "$IDENTITY" ]; then
+  IDENTITY="$(security find-identity -v -p codesigning |
+    sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | sort -u)"
+  n="$(printf '%s' "$IDENTITY" | grep -c . || true)"
+  if [ "$n" != 1 ]; then
+    echo "found $n Developer ID Application identities in the keychain, set SIGN_IDENTITY" >&2
+    exit 1
+  fi
+  echo "== identity $IDENTITY"
+fi
+PROFILE="${NOTARY_PROFILE:-pii-roundtrip}"
 WAIT="${NOTARY_TIMEOUT:-40m}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
