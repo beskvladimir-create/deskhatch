@@ -151,7 +151,7 @@ pub fn install_warning(m: &Manifest, src: &Path) -> Option<String> {
     }
     if let Some(e) = m.llm.endpoint.as_deref().map(clean_name) {
         lines.push(format!(
-            "It names a model endpoint: {e}. deskhatch uses it only if it is on this computer or one you configured, and never sends your API key to it otherwise."
+            "It names a model endpoint: {e}. deskhatch uses it only if it is one you configured yourself, and never sends your API key anywhere else."
         ));
     }
     if replaces_other(&m.id, src) {

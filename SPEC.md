@@ -42,7 +42,7 @@ Everything is served to the page from an origin of its own, `hatch://app-<id>/` 
 }
 ```
 
-Precedence for model settings: `app.json` → user's `deskhatch config` for that provider → built-in defaults. Exception: `llm.endpoint` from `app.json` is used only when it is on this computer (localhost) or equals an endpoint the user configured; otherwise it is ignored. The API key is sent only to an endpoint the user configured or to the provider's built-in endpoint.
+Precedence for model settings: `app.json` → user's `deskhatch config` for that provider → built-in defaults. Exception: `llm.endpoint` from `app.json` is used only when it equals an endpoint the user configured (or the provider's built-in one); otherwise it is ignored. `llm.provider` is honoured only for providers the user set up. The API key is sent only to an endpoint the user configured or to the provider's built-in endpoint.
 API keys are never in the package; they live in the OS keychain (`deskhatch key <provider>`) or in `DESKHATCH_API_KEY[_<PROVIDER>]`.
 
 ## Permission tiers
