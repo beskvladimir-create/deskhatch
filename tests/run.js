@@ -166,6 +166,85 @@ test('a .hatch without an icon still gets one', () => {
   if (!fs.existsSync(path.join(home, 'apps', 'hatchless', 'icon.png'))) throw new Error('icon.png was not drawn');
 });
 
+// ---------------------------------------------------------------- limits found by the audit
+
+test('a manifest cannot smuggle a line break or claim the deskhatch name', () => {
+  const bad = [
+    [{ schema: 1, id: 'inj1', name: 'Evil\nExec=/bin/sh -c id', version: '1.0.0', permissions: 'web' }, 'a name with a line break'],
+    [{ schema: 1, id: 'inj2', name: 'DeskHatch', version: '1.0.0', permissions: 'web' }, 'the reserved name'],
+    [{ schema: 1, id: 'inj3', name: 'Fine', description: 'one\nExec=x', version: '1.0.0', permissions: 'web' }, 'a description with a line break'],
+  ];
+  for (const [m, what] of bad) {
+    const dir = pkg(path.join(home, `src-${m.id}`), m);
+    const r = sh(['install', dir, '--no-launcher', '--yes']);
+    if (r.status === 0) throw new Error(`${what} was accepted`);
+    if (fs.existsSync(path.join(home, 'apps', m.id))) throw new Error(`${what} was copied in anyway`);
+  }
+});
+
+test('an archive cannot be a bomb or name the same file twice', () => {
+  const make = (file, body) => {
+    const r = spawnSync('python3', ['-c', `
+import zipfile, json, sys
+z = zipfile.ZipFile(sys.argv[1], 'w')
+z.writestr('app.json', json.dumps({"schema":1,"id":"zipped","name":"Zipped","permissions":"web"}))
+z.writestr('index.html', '<p>x</p>')
+${body}
+z.close()`, file], { encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`could not build the test archive: ${r.stderr}`);
+    return file;
+  };
+  const refuse = (file, what, expect) => {
+    const r = sh(['install', file, '--no-launcher', '--yes']);
+    if (r.status === 0) throw new Error(`${what} was installed`);
+    if (expect && !expect.test(r.stderr)) throw new Error(`${what} was refused for the wrong reason: ${r.stderr}`);
+    if (fs.existsSync(path.join(home, 'apps', 'zipped'))) throw new Error(`${what} was unpacked anyway`);
+  };
+  refuse(make(path.join(home, 'many.hatch'), "for i in range(6000): z.writestr('f%d.txt' % i, 'x')"),
+    'an archive with 6002 entries', /more than 5000 files/);
+  refuse(make(path.join(home, 'twice.hatch'), "z.writestr('Data.txt', 'a'); z.writestr('data.txt', 'b')"),
+    'an archive naming one file twice', /two entries named/i);
+  refuse(make(path.join(home, 'dot.hatch'), "z.writestr('./app.json', '{}')"),
+    'an archive with a "." entry');
+});
+
+test('global hotkeys need a real modifier and leave common shortcuts alone', () => {
+  const refuse = (hotkeys, what) => {
+    const id = `hk${Object.values(hotkeys).join('').replace(/[^a-z0-9]/gi, '').toLowerCase()}`;
+    const dir = pkg(path.join(home, `src-${id}`), { schema: 1, id, name: `HK ${id}`, version: '1.0.0', permissions: 'desktop', hotkeys });
+    const r = sh(['install', dir, '--no-launcher', '--yes']);
+    if (r.status === 0) throw new Error(`${what} was accepted`);
+    if (fs.existsSync(path.join(home, 'apps', id))) throw new Error(`${what} was copied in anyway`);
+  };
+  refuse({ show: 'P' }, 'a hotkey without a modifier');
+  refuse({ show: 'CmdOrCtrl+Q' }, 'the quit shortcut');
+  refuse({ show: 'CmdOrCtrl+C' }, 'the copy shortcut');
+  refuse({ a: 'CmdOrCtrl+Shift+1', b: 'CmdOrCtrl+Shift+2', c: 'CmdOrCtrl+Shift+3', d: 'CmdOrCtrl+Shift+4', e: 'CmdOrCtrl+Shift+5', f: 'CmdOrCtrl+Shift+6' },
+    'six hotkeys');
+  const good = pkg(path.join(home, 'src-hkgood'), { schema: 1, id: 'hkgood', name: 'HK Good', version: '1.0.0', permissions: 'desktop', hotkeys: { show: 'CmdOrCtrl+Shift+P' } });
+  ok(sh(['install', good, '--no-launcher', '--yes']), 'install an app with a sane hotkey');
+  ok(sh(['uninstall', 'hkgood']), 'uninstall');
+});
+
+test('a launcher never overwrites the bundle of another app', () => {
+  const apps = path.join(home, 'Applications');
+  pkg(path.join(home, 'src-dup1'), { schema: 1, id: 'dup-one', name: 'Twin', version: '1.0.0', permissions: 'web' });
+  pkg(path.join(home, 'src-dup2'), { schema: 1, id: 'dup-two', name: 'Twin', version: '1.0.0', permissions: 'web' });
+  ok(sh(['install', path.join(home, 'src-dup1')]), 'install the first Twin');
+  ok(sh(['install', path.join(home, 'src-dup2')]), 'install the second Twin');
+  const owner = (b) => {
+    const p = path.join(apps, b, 'Contents', 'Info.plist');
+    if (!fs.existsSync(p)) return null;
+    const r = spawnSync('plutil', ['-convert', 'json', '-o', '-', p], { encoding: 'utf8' });
+    return r.status === 0 ? (JSON.parse(r.stdout).CFBundleIdentifier || '') : '';
+  };
+  if (!/dup-one/.test(owner('Twin.app') || '')) throw new Error(`Twin.app no longer belongs to the first app: ${owner('Twin.app')}`);
+  if (!fs.existsSync(path.join(apps, 'Twin (dup-two).app'))) {
+    throw new Error(`the second app did not get its own bundle: ${fs.readdirSync(apps).join(', ')}`);
+  }
+  for (const id of ['dup-one', 'dup-two']) sh(['uninstall', id]);
+}, MAC);
+
 // ---------------------------------------------------------------- stdout and pipes
 
 test('a closed pipe does not panic', () => {
@@ -358,6 +437,25 @@ test('a page cannot navigate away to carry data out', () => {
   const w = sh(['--app', 'thinapp', '--eval', 'String(window.open("https://example.com/?d=secret"))'],
     { timeout: 60000, env: { ...process.env, DESKHATCH_HOME: home, HOME: home, DESKHATCH_TEST: '1' } });
   if ((w.stdout || '').trim() !== '"null"') throw new Error(`window.open was not denied: ${w.stdout || w.stderr}`);
+}, GUI);
+
+test('each app gets its own origin and a fresh one after a reinstall', () => {
+  // All apps once shared one origin and one web storage, so a later app with the same id could
+  // read what an earlier one had stored. The origin now carries a nonce renewed on every install.
+  const dir = pkg(path.join(home, 'src-origin'), { schema: 1, id: 'originapp', name: 'Origin App', version: '1.0.0', permissions: 'web' });
+  const nonce = () => {
+    ok(sh(['install', dir, '--no-launcher']), 'install originapp');
+    const r = sh(['--app', 'originapp', '--eval', 'location.origin'],
+      { timeout: 60000, env: { DESKHATCH_TEST: '1' } });
+    const m = /app-originapp-([0-9a-f]{16})/.exec(r.stdout || '');
+    if (!m) throw new Error(`the app has no origin of its own: ${(r.stdout || '').trim() || r.stderr}`);
+    return m[1];
+  };
+  const first = nonce();
+  ok(sh(['uninstall', 'originapp']), 'uninstall originapp');
+  const second = nonce();
+  if (first === second) throw new Error(`a reinstall kept the origin ${first}, so it still reaches the old web data`);
+  ok(sh(['uninstall', 'originapp']), 'uninstall originapp again');
 }, GUI);
 
 function evalInGallery(expr) {

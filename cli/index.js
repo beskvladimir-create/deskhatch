@@ -94,6 +94,12 @@ async function ensureRuntime({ force = false } = {}) {
   if (!force && fs.existsSync(bin)) return bin;
   const asset = assetName();
   const url = process.env.DESKHATCH_RUNTIME_URL || `https://github.com/${REPO}/releases/download/v${VERSION}/${asset}`;
+  // A custom URL must declare its checksum before anything is fetched, so a refusal costs
+  // neither a download nor a leftover .part file.
+  if (process.env.DESKHATCH_RUNTIME_URL &&
+      !/^[0-9a-f]{64}$/.test((process.env.DESKHATCH_RUNTIME_SHA256 || '').trim().toLowerCase())) {
+    fail('DESKHATCH_RUNTIME_URL needs DESKHATCH_RUNTIME_SHA256 (the sha256 of that file)');
+  }
   fs.mkdirSync(RUNTIME_DIR, { recursive: true });
   const tmp = path.join(RUNTIME_DIR, asset + '.part');
   process.stderr.write(`  fetching deskhatch runtime v${VERSION} for ${process.platform}-${process.arch}\n  ${url}\n`);

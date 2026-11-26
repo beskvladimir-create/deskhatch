@@ -43,4 +43,26 @@ run(['install', folder, '--no-launcher']);
 if (!fs.existsSync(path.join(home, 'apps', 'noicon', 'icon.png'))) throw new Error('default icon missing');
 run(['relink']);
 run(['uninstall', 'noicon']);
+
+// The runtime is verified against the checksums published with the signed release, so the npm
+// package must carry them for its own version, and a custom runtime URL must declare its sum.
+const sums = require('./checksums.json');
+const pkgVersion = require('../package.json').version;
+if (sums.version !== pkgVersion) throw new Error(`checksums.json is for ${sums.version}, package is ${pkgVersion}`);
+for (const f of [
+  `deskhatch-v${pkgVersion}-darwin-arm64.tar.gz`,
+  `deskhatch-v${pkgVersion}-darwin-x64.tar.gz`,
+  `deskhatch-v${pkgVersion}-linux-arm64.AppImage`,
+  `deskhatch-v${pkgVersion}-linux-x64.AppImage`,
+]) {
+  if (!/^[0-9a-f]{64}$/.test(sums.files[f] || '')) throw new Error(`checksums.json has no sha256 for ${f}`);
+}
+const noSum = spawnSync(process.execPath, [cli, 'list'], {
+  encoding: 'utf8',
+  env: { ...env, DESKHATCH_BIN: '', DESKHATCH_HOME: home, DESKHATCH_RUNTIME_URL: 'https://example.invalid/runtime.tar.gz' },
+});
+if (noSum.status === 0) throw new Error('a custom runtime URL was accepted without a checksum');
+if (!/needs DESKHATCH_RUNTIME_SHA256/.test(noSum.stderr)) throw new Error(`unexpected refusal: ${noSum.stderr}`);
+if (fs.existsSync(path.join(home, 'runtime'))) throw new Error('a refused runtime left files behind');
+
 console.log('cli test ok');
