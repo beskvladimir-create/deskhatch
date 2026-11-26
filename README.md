@@ -66,7 +66,7 @@ Full API and manifest: [SPEC.md](SPEC.md).
 | `desktop` | only `allowedHosts` | via runtime | ✓ | folders the user picked |
 | `full` | only `allowedHosts` | via runtime | ✓ | home folder |
 
-The tier is enforced by the runtime and by the page's content-security-policy; the HTML cannot escalate itself. A `web` app from a stranger cannot phone home, read files or load remote scripts, images or fonts. Remote media for `desktop` and `full` come only from `allowedHosts`. Keys live in the OS keychain, never in a package, and go only to model endpoints you configured: an `endpoint` in `app.json` is used only if it is on this computer or is one you set, and it never receives your key otherwise. Installing a package that asks for `desktop` or `full`, names a model endpoint or replaces an installed app shows what it asks for and waits for your yes (`--yes` skips the question in scripts).
+The tier is enforced by the runtime and by the page's content-security-policy; the HTML cannot escalate itself. See [Security notes](#security-notes) for exactly what each tier can and cannot reach. A `web` app from a stranger cannot phone home, read files or load remote scripts, images or fonts. Remote media for `desktop` and `full` come only from `allowedHosts`. Keys live in the OS keychain, never in a package, and go only to model endpoints you configured: an `endpoint` in `app.json` is used only if it is on this computer or is one you set, and it never receives your key otherwise. Installing a package that asks for `desktop` or `full`, names a model endpoint or replaces an installed app shows what it asks for and waits for your yes (`--yes` skips the question in scripts).
 
 ## Install
 
@@ -168,13 +168,19 @@ DESKHATCH_BIN=$PWD/runtime/target/debug/deskhatch DESKHATCH_GUI=1 node tests/run
 
 ## Security notes
 
-- Packages are plain files; read `index.html` before installing something from a stranger, the same way you would read a script.
-- `web` apps cannot reach the network from the page, and no page can navigate away from its own package or open a new window. The only way out is `hatch.llm.chat`, which talks to the endpoint *you* configured.
-- `full` reads and writes anywhere in your home folder, shell startup files included, so a `full` app can get code run at your next login. There is no API to start programs, but grant `full` only to apps you wrote or trust.
-- `~/.deskhatch`, credentials and tokens (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker`, `~/.config/gh`, `~/.netrc`, keychains and more), browser profiles, mail and messenger data (Messages, Mail, Telegram, WhatsApp, Signal, Slack, Discord, `~/Library/Group Containers`) are never accessible to any tier, in any letter case.
-- `hatch.openUrl` asks before opening an address outside `allowedHosts`, because a URL can carry data out.
-- Picking a file grants that file only, not its folder. A package that replaces an installed app with the same id does not inherit the folders granted to the old one.
-- The macOS runtime in Releases is signed with a Developer ID certificate and notarised by Apple: `spctl -a -t exec Deskhatch.app` reports `Notarized Developer ID`. Thin launchers are tiny local bundles pointing at it, so there is nothing to re-sign per app; a `--standalone` bundle is a local copy and is signed ad-hoc on your own machine, which Gatekeeper does not evaluate. Check the release notes of a build for its signing status.
+An app package is someone else's code. deskhatch treats every package, `.hatch` file, folder or bare HTML page as untrusted.
+
+- **Each app is isolated.** Every app runs in its own process with an origin of its own (`hatch://app-<id>/`), so apps never share localStorage, IndexedDB or caches. A page cannot navigate out of its package, open windows or frames to other sites, or use WebRTC.
+- **Network.** A `web` app has no network at all: no fetch, sockets, remote scripts, images or fonts, and resource hints (preconnect, dns-prefetch, prefetch) are stripped. `desktop` and `full` reach only the hosts in `allowedHosts`. On Linux every window's traffic also goes through a local proxy that lets through only those hosts. On macOS that last layer is not in place yet: the content-security-policy, the navigation lock and the hint stripping still apply.
+- **The model and your key.** `hatch.llm.chat` goes to the provider and endpoint *you* configured. An app may pick a provider only among those you set up, and an `endpoint` in `app.json` is used only if it equals one you configured. Your key never goes anywhere else, redirects are not followed, and error bodies from the endpoint are not passed to the page.
+- **Installing asks first.** A package that wants `desktop` or `full`, global hotkeys, a model endpoint, or that would replace an installed app from another source, shows what it asks for and waits for your yes (dialog in the GUI, prompt in the terminal, `--yes` for scripts; without a terminal the answer is no). A bare HTML page never replaces an installed app; it gets a new id. Replacing an app deletes the old app's data and folder access. `deskhatch dev` asks the same way and keeps its data apart from installed apps.
+- **Packages are checked.** Names and texts may not contain line breaks or control characters, `icon` and `entry` must be paths inside the package, links inside packages are not followed, archives are limited to 200 MB actually written and 5,000 files, hotkeys need a real modifier and may not take common shortcuts, and macOS launchers never overwrite a bundle that belongs to another app.
+- **Files.** `desktop` sees only what you pick (a picked file grants that file, not its folder). `full` reads and writes your home folder, except deskhatch's own data, credentials and tokens (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker`, `~/.config/gh`, `~/.netrc`, keychains, AI tool and wallet folders and more), browser profiles, mail and messenger data (Messages, Mail, Telegram, WhatsApp, Signal, Slack, Discord, `~/Library/Group Containers`) and shell histories, in any letter case and through symlinks. No tier may write files that run code later: shell startup files, autostart and systemd entries, LaunchAgents, app menus and launchers. Still, grant `full` only to apps you wrote or trust.
+- **`hatch.openUrl`** asks before opening an address outside `allowedHosts`, and shows the site separately from the full address.
+- **The runtime download is verified.** `npx deskhatch` checks the runtime's SHA-256 against the list shipped in the npm package (or the release's SHA256SUMS.txt) before using it.
+- The macOS runtime in Releases is signed with a Developer ID certificate and notarised by Apple: `spctl -a -t exec Deskhatch.app` reports `Notarized Developer ID`. Thin launchers are tiny local bundles pointing at it; a `--standalone` bundle is a local copy signed ad-hoc on your machine.
+
+Found something? Please report it privately through GitHub's "Report a vulnerability" on this repository.
 
 ## License
 

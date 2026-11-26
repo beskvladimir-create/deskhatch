@@ -39,6 +39,16 @@ for a in "${ASSETS[@]}"; do
   gh release download "$TAG" --repo "$REPO" --dir "$WORK" --pattern "$a"
 done
 
+# Sign only what CI built: every downloaded archive must match the release's own checksum list.
+for a in "${ASSETS[@]}"; do
+  want="$(awk -v f="$a" '$2 == f { print $1 }' "$WORK/SHA256SUMS.txt")"
+  got="$(shasum -a 256 "$WORK/$a" | awk '{print $1}')"
+  if [ -z "$want" ] || [ "$want" != "$got" ]; then
+    echo "checksum mismatch for $a (expected ${want:-none}, got $got); refusing to sign" >&2
+    exit 1
+  fi
+done
+
 for arch in arm64 x64; do
   asset="deskhatch-v${V}-darwin-${arch}.tar.gz"
   out="$WORK/$arch"
@@ -71,4 +81,19 @@ done
 cat SHA256SUMS.txt
 
 gh release upload "$TAG" --repo "$REPO" --clobber "${ASSETS[@]}" SHA256SUMS.txt
+
+# The npm package carries the final checksums, so `npx deskhatch` verifies the runtime against
+# what was published here even if the release page were changed later. Publish npm after this.
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+node -e '
+  const fs = require("fs");
+  const [sums, version, out] = process.argv.slice(1);
+  const files = {};
+  for (const l of fs.readFileSync(sums, "utf8").split("\n")) {
+    const [h, f] = l.trim().split(/\s+/);
+    if (/^[0-9a-f]{64}$/.test(h || "") && f) files[f] = h;
+  }
+  fs.writeFileSync(out, JSON.stringify({ version, files }, null, 2) + "\n");
+' "$WORK/SHA256SUMS.txt" "$V" "$REPO_DIR/cli/checksums.json"
+echo "wrote cli/checksums.json; now: npm publish"
 echo "signed, notarised and uploaded for $TAG"

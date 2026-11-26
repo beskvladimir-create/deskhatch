@@ -1,16 +1,18 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for deskhatch windows. App commands are gated by the manifest permission tier inside Rust.",
-  "windows": ["main", "gallery"],
+  "description": "Capabilities for deskhatch windows: only what the hatch shim needs. No image, tray, menu, path or cursor access from pages; app commands are gated by the manifest permission tier inside Rust.",
+  "windows": [
+    "main",
+    "gallery"
+  ],
   "permissions": [
-    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
     "core:window:allow-set-title",
     "core:window:allow-minimize",
     "core:window:allow-hide",
     "core:window:allow-show",
-    "core:window:allow-set-focus",
-    "core:window:allow-set-always-on-top",
-    "core:event:default"
+    "core:window:allow-set-focus"
   ]
 }

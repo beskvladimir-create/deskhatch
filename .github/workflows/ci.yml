@@ -10,6 +10,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   linux:
     runs-on: ubuntu-22.04
@@ -26,7 +29,7 @@ jobs:
       - name: Build and unit tests
         working-directory: runtime
         run: |
-          cargo build --locked || cargo build
+          cargo build --locked
           cargo test
       - uses: actions/setup-node@v4
         with:

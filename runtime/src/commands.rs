@@ -124,7 +124,12 @@ pub async fn open_url(app: AppHandle, ctx: State<'_, AppCtx>, url: String) -> R<
         let shown: String = url.chars().take(300).collect();
         let yes = app
             .dialog()
-            .message(format!("{} wants to open this address in your browser:\n\n{}", m.name, shown))
+            .message(format!(
+                "{} wants to open this site in your browser:\n\n{}\n\nFull address:\n{}",
+                m.name,
+                host.as_deref().unwrap_or("(no site)"),
+                shown
+            ))
             .title("Open link?")
             .kind(MessageDialogKind::Warning)
             .buttons(MessageDialogButtons::OkCancelCustom("Open".into(), "Cancel".into()))
@@ -134,6 +139,13 @@ pub async fn open_url(app: AppHandle, ctx: State<'_, AppCtx>, url: String) -> R<
         }
     }
     tauri_plugin_opener::open_url(url, None::<&str>).map_err(|e| e.to_string())
+}
+
+/// Always-on-top is a desktop-tier power: a web page could otherwise cover the screen.
+#[tauri::command]
+pub fn window_set_always_on_top(window: Window, ctx: State<'_, AppCtx>, on: bool) -> R<()> {
+    need(&ctx, Tier::Desktop, "window.setAlwaysOnTop")?;
+    window.set_always_on_top(on).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -182,7 +194,7 @@ fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
 
-fn allowed(m: &Manifest, p: &Path, _for_write: bool) -> R<PathBuf> {
+fn allowed(m: &Manifest, p: &Path, for_write: bool) -> R<PathBuf> {
     let abs = if p.is_absolute() { p.to_path_buf() } else { home().join(p) };
     // Resolve the deepest existing ancestor so new files can be created inside granted folders.
     let mut probe = abs.clone();
@@ -217,6 +229,9 @@ fn allowed(m: &Manifest, p: &Path, _for_write: bool) -> R<PathBuf> {
     if is_forbidden(&canon, &home_c) {
         return Err(format!("access to {} is not allowed", canon.display()));
     }
+    if for_write && under_any(&canon, &home_c, NO_WRITE_IN_HOME) {
+        return Err(format!("writing to {} is not allowed", canon.display()));
+    }
     if ok {
         Ok(canon)
     } else {
@@ -246,19 +261,81 @@ const FORBIDDEN_IN_HOME: &[&str] = &[
     "Library/Application Support/WhatsApp", "Library/Application Support/discord",
     "Library/Application Support/Slack", "Library/Application Support/Viber",
     "Library/Application Support/AddressBook", "Library/Application Support/com.apple.TCC",
-    "Library/Application Support/Claude",
+    "Library/Application Support/Claude", ".claude", ".codex", ".ollama", ".gemini", ".cursor",
+    ".config/Code", "Library/Application Support/Code", ".config/1Password",
+    "Library/Group Containers/2BUA8C4S2C.com.1password", ".config/Bitwarden",
+    "Library/Application Support/Bitwarden", ".bitcoin", ".ethereum", ".electrum",
+    "Library/Application Support/Bitcoin", ".config/rclone", ".s3cfg", ".oci", ".terraform.d",
+    ".vault-token", ".config/op", ".local/share/tech.besk.deskhatch",
+    "Library/WebKit/tech.besk.deskhatch", "Library/Caches/tech.besk.deskhatch",
+    "Library/Application Support/tech.besk.deskhatch",
+    ".bash_history", ".zsh_history", ".python_history", ".node_repl_history", ".psql_history",
+    ".mysql_history", ".lesshst", ".local/share/fish/fish_history",
 ];
 
-pub(crate) fn is_forbidden(canon: &Path, home_c: &Path) -> bool {
+/// Places that make the system run something later (at login, in a new shell, from a menu).
+/// No tier may write there, `full` included: writing them is running code as the user.
+const NO_WRITE_IN_HOME: &[&str] = &[
+    ".bashrc", ".bash_profile", ".bash_login", ".profile", ".zshrc", ".zprofile", ".zshenv",
+    ".zlogin", ".config/fish", ".config/autostart", ".config/systemd", ".config/environment.d",
+    ".local/share/applications", ".local/share/icons", ".local/bin", "bin", ".gitconfig",
+    ".config/git", ".ssh", "Library/LaunchAgents", "Library/LaunchDaemons", "Applications",
+    "Library/Preferences", "Library/Services", "Library/Scripts", ".xinitrc", ".xprofile",
+    ".pam_environment", ".npmrc", ".pypirc", ".cargo/config.toml", ".cargo/config",
+    ".bash_logout", ".local/share/systemd", ".config/autostart-scripts", ".config/plasma-workspace",
+    ".config/nvim", ".vimrc", ".vim", ".emacs", ".emacs.d", ".config/pip", ".pip", ".ipython",
+    ".jupyter", ".gradle", ".m2", ".config/Code", "Library/Application Support/Code",
+    "Library/Application Scripts", "Library/Workflows", ".tmux.conf", ".inputrc", ".wgetrc",
+    ".curlrc", ".hgrc", ".config/containers", ".docker", ".kube",
+];
+
+/// `p` with its deepest existing ancestor resolved through links and the rest appended, so a
+/// rule about `~/.config/autostart` also catches it when `~/.config` is a link elsewhere.
+fn resolve_through_links(p: &Path) -> PathBuf {
+    let mut probe = p.to_path_buf();
+    let mut tail = vec![];
+    while !probe.exists() {
+        match (probe.file_name(), probe.parent()) {
+            (Some(n), Some(par)) => {
+                tail.push(n.to_os_string());
+                probe = par.to_path_buf();
+            }
+            _ => return p.to_path_buf(),
+        }
+    }
+    let mut out = probe.canonicalize().unwrap_or(probe);
+    for t in tail.iter().rev() {
+        out.push(t);
+    }
+    out
+}
+
+fn under_any(canon: &Path, home_c: &Path, list: &[&str]) -> bool {
     let lower = |p: &Path| p.to_string_lossy().to_lowercase();
     let c = lower(canon);
     let under = |f: &Path| {
         let f = lower(f);
         c == f || c.starts_with(&(f + "/"))
     };
+    list.iter().any(|d| {
+        // The literal path, the path through the unresolved home, and where it really points
+        // (dotfile managers often make ~/.ssh a link into another folder).
+        let a = home_c.join(d);
+        let b = home().join(d);
+        under(&a) || under(&b) || under(&resolve_through_links(&a))
+    })
+}
+
+pub(crate) fn is_forbidden(canon: &Path, home_c: &Path) -> bool {
     let root = store::root();
     let root_c = root.canonicalize().unwrap_or(root.clone());
-    under(&root) || under(&root_c) || FORBIDDEN_IN_HOME.iter().any(|d| under(&home_c.join(d)) || under(&home().join(d)))
+    let lower = |p: &Path| p.to_string_lossy().to_lowercase();
+    let c = lower(canon);
+    let in_root = |r: &Path| {
+        let r = lower(r);
+        c == r || c.starts_with(&(r + "/"))
+    };
+    in_root(&root) || in_root(&root_c) || under_any(canon, home_c, FORBIDDEN_IN_HOME)
 }
 
 #[tauri::command]
@@ -424,7 +501,7 @@ pub async fn gallery_import(app: AppHandle, window: Window) -> R<Option<String>>
     if p.file_name().and_then(|n| n.to_str()) == Some("app.json") {
         p = p.parent().unwrap().to_path_buf();
     }
-    if let Some(w) = packages::peek(&p).map_err(|e| e.to_string())?.as_ref().and_then(packages::install_warning) {
+    if let Some(w) = packages::peek(&p).map_err(|e| e.to_string())?.as_ref().and_then(|m| packages::install_warning(m, &p)) {
         use tauri_plugin_dialog::{MessageDialogButtons, MessageDialogKind};
         let yes = app
             .dialog()
@@ -570,6 +647,11 @@ mod tests {
                   "Library/Group Containers/x/y", "Library/Application Support/Telegram Desktop/tdata",
                   ".local/share/TelegramDesktop/tdata", ".config/google-chrome/Default/Cookies"] {
             assert!(allowed(&m, &home().join(p), false).is_err(), "{p} must be closed");
+        }
+        // Nothing that runs at login or in a new shell can be written, even at full.
+        for p in [".bashrc", ".zshrc", ".config/autostart/x.desktop", "Library/LaunchAgents/x.plist", ".ipython/profile_default/startup/x.py",
+                  ".local/share/applications/x.desktop", ".config/systemd/user/x.service"] {
+            assert!(allowed(&m, &home().join(p), true).is_err(), "{p} must not be writable");
         }
         let _ = std::fs::remove_dir_all(&tmp);
     }

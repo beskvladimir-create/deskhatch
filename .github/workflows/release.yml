@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -82,7 +82,7 @@ jobs:
         working-directory: runtime
         shell: bash
         run: |
-          npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }} ${{ runner.os == 'Linux' && '--bundles appimage,deb' || '--bundles app' }}
+          npx --yes @tauri-apps/cli@2.12.6 build --target ${{ matrix.target }} ${{ runner.os == 'Linux' && '--bundles appimage,deb' || '--bundles app' }}
 
       - name: Package artifacts
         shell: bash
@@ -111,6 +111,8 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/download-artifact@v4

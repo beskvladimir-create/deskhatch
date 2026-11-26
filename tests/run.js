@@ -111,6 +111,51 @@ test('a package that asks for more than web is not installed without a yes', () 
   ok(sh(['uninstall', 'greedy']), 'uninstall');
 });
 
+test('package contents cannot reach outside the package', () => {
+  // A line break in a <title> must not add keys to a Linux .desktop file.
+  const evil = path.join(home, 'evil-title.html');
+  fs.writeFileSync(evil, '<title>Todo\nExec=sh -c "touch /tmp/pwned"\n[X]</title><p>x</p>');
+  ok(sh(['install', evil]), 'install html with a line break in the title');
+  const todo = fs.readdirSync(path.join(home, 'apps')).find((d) => d.startsWith('todo'));
+  const tm = JSON.parse(fs.readFileSync(path.join(home, 'apps', todo, 'app.json'), 'utf8'));
+  if (/[\r\n]/.test(tm.name)) throw new Error(`the name kept a line break: ${JSON.stringify(tm.name)}`);
+  if (process.platform === 'linux') {
+    const dir = path.join(home, '.local', 'share', 'applications');
+    for (const f of fs.readdirSync(dir).filter((f) => f.startsWith('deskhatch-todo'))) {
+      const d = fs.readFileSync(path.join(dir, f), 'utf8');
+      if (d.split('\n').filter((l) => l.startsWith('Exec=')).length !== 1) throw new Error(`injected Exec:\n${d}`);
+    }
+  }
+  // A bare page never replaces an installed app.
+  pkg(path.join(home, 'src-orig'), { schema: 1, id: 'orig', name: 'Orig', version: '1.0.0', permissions: 'web' });
+  ok(sh(['install', path.join(home, 'src-orig'), '--no-launcher']), 'install orig');
+  const imp = path.join(home, 'orig.html');
+  fs.writeFileSync(imp, '<title>Orig</title><p>impostor</p>');
+  const out = ok(sh(['install', imp, '--no-launcher']), 'install impostor');
+  if (!/orig-2/.test(out)) throw new Error(`the page took the installed id:\n${out}`);
+  // icon and entry must stay inside the package.
+  pkg(path.join(home, 'src-icon'), { schema: 1, id: 'iconx', name: 'Icon X', version: '1.0.0', permissions: 'web', icon: '/tmp/x.png' });
+  if (sh(['install', path.join(home, 'src-icon'), '--no-launcher']).status === 0) throw new Error('an absolute icon path was accepted');
+  // Links in a package folder are not followed.
+  fs.writeFileSync(path.join(home, 'secret.txt'), 'TOPSECRET');
+  pkg(path.join(home, 'src-link'), { schema: 1, id: 'linky', name: 'Linky', version: '1.0.0', permissions: 'web' });
+  fs.symlinkSync(path.join(home, 'secret.txt'), path.join(home, 'src-link', 'data.txt'));
+  ok(sh(['install', path.join(home, 'src-link'), '--no-launcher']), 'install linky');
+  if (fs.existsSync(path.join(home, 'apps', 'linky', 'data.txt'))) throw new Error('a link was copied into the package');
+  // An archive with a second app.json behind "x/../" is refused, not installed with the second one.
+  const swap = path.join(home, 'swap.hatch');
+  const py = spawnSync('python3', ['-c', `
+import zipfile, json, sys
+z = zipfile.ZipFile(sys.argv[1], 'w')
+z.writestr('app.json', json.dumps({"schema":1,"id":"swapme","name":"Swap","permissions":"web"}))
+z.writestr('index.html', '<p>x</p>')
+z.writestr('x/../app.json', json.dumps({"schema":1,"id":"swapme","name":"Swap","permissions":"full","allowedHosts":["*"]}))
+z.close()`, swap], { encoding: 'utf8' });
+  if (py.status !== 0) throw new Error(`could not build the test archive: ${py.stderr}`);
+  if (sh(['install', swap, '--no-launcher']).status === 0) throw new Error('an ambiguous archive was installed');
+  for (const id of [todo, 'orig', 'orig-2', 'linky']) sh(['uninstall', id]);
+});
+
 test('a .hatch without an icon still gets one', () => {
   pkg(path.join(home, 'src-hatch'), { schema: 1, id: 'hatchless', name: 'Hatchless', version: '1.0.0', permissions: 'web' });
   ok(sh(['install', path.join(home, 'src-hatch'), '--no-launcher']), 'install');
