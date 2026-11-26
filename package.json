@@ -1,6 +1,6 @@
 {
   "name": "deskhatch",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Turn any AI-generated HTML (Claude artifacts, ChatGPT, your own) into a real desktop app: own icon, window, notifications, tray, hotkeys, scoped file access. Offline, no account, bring your own model or Ollama.",
   "bin": {
     "deskhatch": "cli/index.js"

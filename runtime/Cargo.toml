@@ -1,6 +1,6 @@
 [package]
 name = "deskhatch"
-version = "0.2.3"
+version = "0.2.4"
 description = "deskhatch runtime: turns an HTML app package into a real desktop app"
 authors = ["Vladimir Beskorovainyi <admin@besk.tech>"]
 license = "MIT"
