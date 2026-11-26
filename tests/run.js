@@ -458,6 +458,42 @@ test('each app gets its own origin and a fresh one after a reinstall', () => {
   ok(sh(['uninstall', 'originapp']), 'uninstall originapp again');
 }, GUI);
 
+test('a web app cannot reach the network, not even this computer', () => {
+  // The tier is the whole promise of a `web` app: no fetch, no socket, no beacon. A local
+  // listener is the strictest case, because it needs no internet and no DNS. It runs as a child
+  // process: these tests are synchronous, so a server in this process would never accept.
+  const portFile = path.join(home, 'listener.port');
+  const hitFile = path.join(home, 'listener.hits');
+  const script = `
+    const http = require('http'), fs = require('fs');
+    const server = http.createServer((req, res) => {
+      fs.appendFileSync(${JSON.stringify(hitFile)}, req.method + ' ' + req.url + '\\n');
+      res.writeHead(204); res.end();
+    });
+    server.listen(0, '127.0.0.1', () => fs.writeFileSync(${JSON.stringify(portFile)}, String(server.address().port)));
+  `;
+  const child = spawn(process.execPath, ['-e', script], { stdio: 'ignore' });
+  try {
+    let port = null;
+    for (let i = 0; i < 40 && !port; i++) {
+      if (fs.existsSync(portFile)) port = fs.readFileSync(portFile, 'utf8').trim();
+      if (!port) sleep(100);
+    }
+    if (!port) throw new Error('the test listener did not start');
+    pkg(path.join(home, 'src-netprobe'), { schema: 1, id: 'netprobe', name: 'Net Probe', version: '1.0.0', permissions: 'web' });
+    ok(sh(['install', path.join(home, 'src-netprobe'), '--no-launcher']), 'install netprobe');
+    const ev = (expr) => sh(['--app', 'netprobe', '--eval', expr], { timeout: 60000, env: { DESKHATCH_TEST: '1' } }).stdout || '';
+    const fetched = ev(`fetch("http://127.0.0.1:${port}/f").then(r => "REACHED " + r.status, e => "blocked")`);
+    if (/REACHED/.test(fetched)) throw new Error(`a web app reached a local server: ${fetched.trim()}`);
+    ev(`new Promise(r => { navigator.sendBeacon("http://127.0.0.1:${port}/b", "x"); setTimeout(() => r("sent"), 1500); })`);
+    sleep(500);
+    if (fs.existsSync(hitFile)) throw new Error(`a web app got out: ${fs.readFileSync(hitFile, 'utf8').trim()}`);
+  } finally {
+    child.kill();
+    sh(['uninstall', 'netprobe']);
+  }
+}, GUI);
+
 function evalInGallery(expr) {
   const r = spawnSync(run(), ['--eval', expr], {
     encoding: 'utf8',
