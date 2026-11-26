@@ -1,6 +1,6 @@
 //! Importing, exporting and installing app packages, and creating OS launchers.
 
-use crate::manifest::{slugify, Manifest};
+use crate::manifest::{slugify, Manifest, Tier};
 use crate::store;
 use std::fs;
 use std::io::{Read, Write};
@@ -36,6 +36,83 @@ pub struct Installed {
 /// * a directory containing app.json (+ index.html)
 /// * a .hatch zip file
 /// * a bare .html file (a manifest is synthesised; permissions = web)
+
+/// A package that replaces an installed app with the same id must not inherit the folders the
+/// user granted to the old one.
+fn forget_grants(id: &str) {
+    let _ = fs::remove_file(store::grants_file(id));
+}
+
+/// Read the manifest of a package without installing it, so the caller can show the user what
+/// it asks for. `None` for a bare HTML file, which always installs at the `web` tier.
+pub fn peek(source: &Path) -> Result<Option<Manifest>> {
+    let src = source
+        .canonicalize()
+        .map_err(|_| PkgError::Other(format!("not found: {}", source.display())))?;
+    if src.is_dir() {
+        return Ok(Some(Manifest::load(&src)?));
+    }
+    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if ext == "hatch" || ext == "zip" {
+        store::ensure_dirs()?;
+        let tmp = store::root().join("tmp").join(format!("peek-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp)?;
+        let res = (|| -> Result<Manifest> {
+            unzip_to(&src, &tmp)?;
+            let mut root = tmp.clone();
+            if !root.join("app.json").exists() {
+                let entries: Vec<_> = fs::read_dir(&root)?.filter_map(|e| e.ok()).collect();
+                if entries.len() == 1 && entries[0].path().is_dir() {
+                    root = entries[0].path();
+                }
+            }
+            Ok(Manifest::load(&root)?)
+        })();
+        let _ = fs::remove_dir_all(&tmp);
+        return Ok(Some(res?));
+    }
+    Ok(None)
+}
+
+/// What the user must approve before this package is installed, or `None` when there is
+/// nothing to approve (a `web` app that replaces nothing and names no model endpoint).
+pub fn install_warning(m: &Manifest) -> Option<String> {
+    let mut lines = vec![];
+    match m.permissions {
+        Tier::Full => lines.push(
+            "Permission: FULL. It can read and change files anywhere in your home folder.".to_string(),
+        ),
+        Tier::Desktop => lines.push(
+            "Permission: DESKTOP. Notifications, tray, hotkeys, and the folders you pick for it.".to_string(),
+        ),
+        Tier::Web => {}
+    }
+    if m.permissions >= Tier::Desktop && !m.allowed_hosts.is_empty() {
+        lines.push(format!("It can connect to: {}", m.allowed_hosts.join(", ")));
+    }
+    if let Some(e) = m.llm.endpoint.as_deref() {
+        lines.push(format!(
+            "It names a model endpoint: {e}. deskhatch uses it only if it is on this computer or one you configured, and never sends your API key to it otherwise."
+        ));
+    }
+    if store::app_dir(&m.id).exists() {
+        lines.push(format!(
+            "It replaces the installed app with id \"{}\". Folder access given to that app is removed.",
+            m.id
+        ));
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Install \"{}\" {}?\n\n{}\n\nOnly install apps from people you trust. You can read its index.html first.",
+        m.name,
+        m.version,
+        lines.join("\n")
+    ))
+}
+
 pub fn import(source: &Path, name_override: Option<&str>) -> Result<Manifest> {
     store::ensure_dirs()?;
     let src = source
@@ -47,6 +124,7 @@ pub fn import(source: &Path, name_override: Option<&str>) -> Result<Manifest> {
         let dest = store::app_dir(&m.id);
         if dest.exists() && dest.canonicalize().ok().as_deref() != Some(&src) {
             fs::remove_dir_all(&dest)?;
+            forget_grants(&m.id);
         }
         if dest.canonicalize().ok().as_deref() != Some(&src) {
             copy_dir(&src, &dest)?;
@@ -78,6 +156,7 @@ pub fn import(source: &Path, name_override: Option<&str>) -> Result<Manifest> {
         let dest = store::app_dir(&m.id);
         if dest.exists() {
             fs::remove_dir_all(&dest)?;
+            forget_grants(&m.id);
         }
         copy_dir(&root, &dest)?;
         let _ = fs::remove_dir_all(&tmp);

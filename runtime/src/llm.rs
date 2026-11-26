@@ -12,6 +12,28 @@ pub struct Resolved {
     pub endpoint: String,
     pub model: String,
     pub has_key: bool,
+    /// The API key is attached only to an endpoint the user chose (or the provider's own
+    /// built-in endpoint), never to an address that came from an app package.
+    #[serde(skip)]
+    pub key_allowed: bool,
+}
+
+/// True for http(s) URLs on this machine: localhost, 127.0.0.0/8 and ::1.
+pub fn is_loopback(url: &str) -> bool {
+    let Ok(u) = reqwest::Url::parse(url) else { return false };
+    if !matches!(u.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(h) = u.host_str() else { return false };
+    let h = h.trim_start_matches('[').trim_end_matches(']');
+    if h.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    h.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
+}
+
+fn norm(e: &str) -> String {
+    e.trim().trim_end_matches('/').to_string()
 }
 
 fn default_endpoint(provider: &str) -> &'static str {
@@ -41,6 +63,11 @@ fn default_model(provider: &str) -> &'static str {
 }
 
 /// Precedence: app manifest > runtime config (per provider) > runtime config (global) > built-in.
+///
+/// An app package may choose the provider and the model, but it may not send your requests
+/// somewhere you did not choose: an `endpoint` in app.json is honoured only when it is on this
+/// machine (localhost) or is one you configured yourself. Your API key goes only to endpoints
+/// you configured or to the provider's own built-in endpoint.
 pub fn resolve(m: Option<&Manifest>, override_model: Option<&str>) -> Resolved {
     let cfg = store::load_config();
     let app = m.map(|m| &m.llm);
@@ -49,11 +76,30 @@ pub fn resolve(m: Option<&Manifest>, override_model: Option<&str>) -> Resolved {
         .or_else(|| cfg.provider.clone())
         .unwrap_or_else(|| "ollama".into());
     let pc = cfg.providers.get(&provider);
-    let endpoint = app
-        .and_then(|l| l.endpoint.clone())
+    let user_endpoints: Vec<String> = [
+        pc.and_then(|p| p.endpoint.clone()),
+        cfg.endpoint.clone(),
+        Some(default_endpoint(&provider).to_string()).filter(|e| !e.is_empty()),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|e| norm(&e))
+    .collect();
+    let app_endpoint = app.and_then(|l| l.endpoint.clone()).map(|e| norm(&e)).filter(|e| {
+        let ok = is_loopback(e) || user_endpoints.iter().any(|u| u == e);
+        if !ok {
+            eprintln!(
+                "deskhatch: ignoring the model endpoint {e} from app.json; only endpoints on this machine or ones you configured are used"
+            );
+        }
+        ok
+    });
+    let endpoint = app_endpoint
         .or_else(|| pc.and_then(|p| p.endpoint.clone()))
         .or_else(|| cfg.endpoint.clone())
         .unwrap_or_else(|| default_endpoint(&provider).to_string());
+    let endpoint = norm(&endpoint);
+    let key_allowed = user_endpoints.iter().any(|u| u == &endpoint);
     let model = override_model
         .map(|s| s.to_string())
         .or_else(|| app.and_then(|l| l.model.clone()))
@@ -63,8 +109,9 @@ pub fn resolve(m: Option<&Manifest>, override_model: Option<&str>) -> Resolved {
     Resolved {
         has_key: store::get_api_key(&provider).is_some(),
         provider,
-        endpoint: endpoint.trim_end_matches('/').to_string(),
+        endpoint,
         model,
+        key_allowed,
     }
 }
 
@@ -143,8 +190,10 @@ pub async fn chat(
         .post(format!("{}/chat/completions", r.endpoint))
         .header("content-type", "application/json")
         .header("user-agent", "deskhatch/0.1");
-    if let Some(k) = store::get_api_key(&r.provider) {
-        req = req.bearer_auth(k);
+    if r.key_allowed {
+        if let Some(k) = store::get_api_key(&r.provider) {
+            req = req.bearer_auth(k);
+        }
     }
     let resp = req.json(&body).send().await.map_err(|e| {
         if r.provider == "ollama" {
@@ -182,8 +231,10 @@ pub async fn models(m: Option<&Manifest>) -> Result<Vec<String>, String> {
     let r = resolve(m, None);
     let client = reqwest::Client::new();
     let mut req = client.get(format!("{}/models", r.endpoint));
-    if let Some(k) = store::get_api_key(&r.provider) {
-        req = req.bearer_auth(k);
+    if r.key_allowed {
+        if let Some(k) = store::get_api_key(&r.provider) {
+            req = req.bearer_auth(k);
+        }
     }
     let v: Value = req
         .send()
@@ -200,4 +251,43 @@ pub async fn models(m: Option<&Manifest>) -> Result<Vec<String>, String> {
                 .collect()
         })
         .unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loopback_detection() {
+        assert!(is_loopback("http://localhost:11434/v1"));
+        assert!(is_loopback("http://127.0.0.1:8080/v1"));
+        assert!(is_loopback("http://[::1]:1234/v1"));
+        assert!(!is_loopback("https://attacker.example/v1"));
+        assert!(!is_loopback("http://localhost.attacker.example/v1"));
+        assert!(!is_loopback("http://10.0.0.5/v1"));
+        assert!(!is_loopback("file:///etc/passwd"));
+    }
+
+    #[test]
+    fn app_json_cannot_redirect_the_model_or_the_key() {
+        let tmp = std::env::temp_dir().join(format!("deskhatch-llm-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var("DESKHATCH_HOME", &tmp);
+        let m: Manifest = serde_json::from_str(
+            r#"{"id":"t","name":"t","llm":{"provider":"openai","endpoint":"https://attacker.example/v1"}}"#,
+        )
+        .unwrap();
+        let r = resolve(Some(&m), None);
+        assert_eq!(r.endpoint, "https://api.openai.com/v1", "a foreign endpoint from app.json must be ignored");
+        assert!(r.key_allowed, "the key may go to the provider's own endpoint");
+
+        let local: Manifest = serde_json::from_str(
+            r#"{"id":"t","name":"t","llm":{"provider":"openai","endpoint":"http://localhost:9999/v1"}}"#,
+        )
+        .unwrap();
+        let r = resolve(Some(&local), None);
+        assert_eq!(r.endpoint, "http://localhost:9999/v1");
+        assert!(!r.key_allowed, "an endpoint the user did not configure never gets the key");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

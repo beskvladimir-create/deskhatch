@@ -108,10 +108,30 @@ pub fn notify(app: AppHandle, ctx: State<'_, AppCtx>, title: String, body: Optio
 }
 
 #[tauri::command]
-pub fn open_url(ctx: State<'_, AppCtx>, url: String) -> R<()> {
-    need(&ctx, Tier::Desktop, "openUrl")?;
+pub async fn open_url(app: AppHandle, ctx: State<'_, AppCtx>, url: String) -> R<()> {
+    let m = need(&ctx, Tier::Desktop, "openUrl")?.clone();
     if !(url.starts_with("https://") || url.starts_with("http://") || url.starts_with("mailto:")) {
         return Err("only http(s) and mailto URLs can be opened".into());
+    }
+    // A URL carries data out in its query string, so a host outside allowedHosts needs the
+    // user's yes every time.
+    let host = reqwest::Url::parse(&url).ok().and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()));
+    let listed = host.as_deref().is_some_and(|h| {
+        m.allowed_hosts.iter().any(|a| a == "*" || a.eq_ignore_ascii_case(h))
+    });
+    if !listed {
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+        let shown: String = url.chars().take(300).collect();
+        let yes = app
+            .dialog()
+            .message(format!("{} wants to open this address in your browser:\n\n{}", m.name, shown))
+            .title("Open link?")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom("Open".into(), "Cancel".into()))
+            .blocking_show();
+        if !yes {
+            return Err("the user declined to open the link".into());
+        }
     }
     tauri_plugin_opener::open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
@@ -180,10 +200,11 @@ fn allowed(m: &Manifest, p: &Path, _for_write: bool) -> R<PathBuf> {
     for t in tail.iter().rev() {
         canon.push(t);
     }
+    let home_c = home().canonicalize().unwrap_or_else(|_| home());
     let ok = match m.permissions {
         // Reads and writes alike: the home folder, plus anything the user picked in a dialog.
         Tier::Full => {
-            canon.starts_with(home())
+            canon.starts_with(&home_c)
                 || store::load_grants(&m.id).folders.iter().any(|g| canon.starts_with(g))
         }
         Tier::Desktop => store::load_grants(&m.id)
@@ -193,8 +214,7 @@ fn allowed(m: &Manifest, p: &Path, _for_write: bool) -> R<PathBuf> {
         Tier::Web => false,
     };
     // Never touch deskhatch's own data or credential folders.
-    let forbidden = [store::root(), home().join(".ssh"), home().join(".gnupg"), home().join(".aws")];
-    if forbidden.iter().any(|f| canon.starts_with(f)) {
+    if is_forbidden(&canon, &home_c) {
         return Err(format!("access to {} is not allowed", canon.display()));
     }
     if ok {
@@ -205,6 +225,40 @@ fn allowed(m: &Manifest, p: &Path, _for_write: bool) -> R<PathBuf> {
             canon.display()
         ))
     }
+}
+
+
+/// Folders no app may read or write at any tier, even when the user picked them: deskhatch's
+/// own data, credentials and tokens, browser profiles, mail and messenger data. Compared
+/// case-insensitively, because the default macOS file system is.
+const FORBIDDEN_IN_HOME: &[&str] = &[
+    ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".config/gh", ".config/gcloud",
+    ".config/hub", ".git-credentials", ".netrc", ".npmrc", ".pypirc", ".cargo/credentials",
+    ".cargo/credentials.toml", ".password-store", ".local/share/keyrings", ".mozilla",
+    ".thunderbird", ".config/google-chrome", ".config/chromium", ".config/BraveSoftware",
+    ".config/microsoft-edge", ".config/Signal", ".config/discord", ".config/Slack",
+    ".config/Element", ".local/share/TelegramDesktop", ".var/app", "snap",
+    "Library/Keychains", "Library/Cookies", "Library/Messages", "Library/Mail",
+    "Library/Containers", "Library/Group Containers", "Library/Safari",
+    "Library/Application Support/Google", "Library/Application Support/Firefox",
+    "Library/Application Support/BraveSoftware", "Library/Application Support/Microsoft Edge",
+    "Library/Application Support/Telegram Desktop", "Library/Application Support/Signal",
+    "Library/Application Support/WhatsApp", "Library/Application Support/discord",
+    "Library/Application Support/Slack", "Library/Application Support/Viber",
+    "Library/Application Support/AddressBook", "Library/Application Support/com.apple.TCC",
+    "Library/Application Support/Claude",
+];
+
+pub(crate) fn is_forbidden(canon: &Path, home_c: &Path) -> bool {
+    let lower = |p: &Path| p.to_string_lossy().to_lowercase();
+    let c = lower(canon);
+    let under = |f: &Path| {
+        let f = lower(f);
+        c == f || c.starts_with(&(f + "/"))
+    };
+    let root = store::root();
+    let root_c = root.canonicalize().unwrap_or(root.clone());
+    under(&root) || under(&root_c) || FORBIDDEN_IN_HOME.iter().any(|d| under(&home_c.join(d)) || under(&home().join(d)))
 }
 
 #[tauri::command]
@@ -238,10 +292,8 @@ pub async fn fs_pick_file(app: AppHandle, ctx: State<'_, AppCtx>, title: Option<
     match picked {
         Some(fp) => {
             let p = fp.into_path().map_err(|e| e.to_string())?;
-            if let Some(parent) = p.parent() {
-                // Grant the file's folder so the app can read it back later.
-                store::add_grant(&m.id, parent).map_err(|e| e.to_string())?;
-            }
+            // Grant that one file, not its whole folder.
+            store::add_grant(&m.id, &p).map_err(|e| e.to_string())?;
             Ok(Some(p.to_string_lossy().to_string()))
         }
         None => Ok(None),
@@ -372,6 +424,19 @@ pub async fn gallery_import(app: AppHandle, window: Window) -> R<Option<String>>
     if p.file_name().and_then(|n| n.to_str()) == Some("app.json") {
         p = p.parent().unwrap().to_path_buf();
     }
+    if let Some(w) = packages::peek(&p).map_err(|e| e.to_string())?.as_ref().and_then(packages::install_warning) {
+        use tauri_plugin_dialog::{MessageDialogButtons, MessageDialogKind};
+        let yes = app
+            .dialog()
+            .message(w)
+            .title("Install this app?")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom("Install".into(), "Cancel".into()))
+            .blocking_show();
+        if !yes {
+            return Ok(None);
+        }
+    }
     let m = packages::import(&p, None).map_err(|e| e.to_string())?;
     let _ = packages::create_launcher(&m);
     Ok(Some(m.id))
@@ -497,8 +562,15 @@ mod tests {
         assert!(allowed(&m, Path::new("/etc/hosts"), true).is_err());
         // Inside home: allowed.
         assert!(allowed(&m, &home().join("deskhatch-test-file"), false).is_ok());
-        // Credential folders stay closed.
+        // Credential folders stay closed, in any letter case.
         assert!(allowed(&m, &home().join(".ssh").join("id_ed25519"), false).is_err());
+        assert!(allowed(&m, &home().join(".SSH").join("id_ed25519"), false).is_err());
+        // Tokens, browser profiles, mail and messengers stay closed too.
+        for p in [".config/gh/hosts.yml", ".kube/config", ".netrc", "Library/Messages/chat.db",
+                  "Library/Group Containers/x/y", "Library/Application Support/Telegram Desktop/tdata",
+                  ".local/share/TelegramDesktop/tdata", ".config/google-chrome/Default/Cookies"] {
+            assert!(allowed(&m, &home().join(p), false).is_err(), "{p} must be closed");
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
