@@ -1,0 +1,11 @@
+{
+  "version": "0.2.4",
+  "files": {
+    "deskhatch-v0.2.4-darwin-arm64.tar.gz": "0dc298c912f1a28869011c93307808e0bf4b32f8da9bf8d60ceaf86590d82b36",
+    "deskhatch-v0.2.4-darwin-x64.tar.gz": "aba6fa96563294836cdb9ad7cede62843f85f3e9b6a061ae6091598eee5c0cb1",
+    "deskhatch-v0.2.4-linux-arm64.AppImage": "09623af7aea63d913381494630d957d437c3c3c81c7dcd4b730fbd916ad9401c",
+    "deskhatch-v0.2.4-linux-arm64.deb": "9412973919b9e1c4c395189899bc44b1b64c8c671a14e8411115e0d5bad2e064",
+    "deskhatch-v0.2.4-linux-x64.AppImage": "5c83dc573ba73de24126a524ec3ac1bbe08dc7e5ce7f416c3fe39483525813c2",
+    "deskhatch-v0.2.4-linux-x64.deb": "5f31ca2be1c47ac3bba0b75d9853df5aa90f9aff994a49723d45c7f50aac349f"
+  }
+}

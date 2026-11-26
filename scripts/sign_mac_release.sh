@@ -17,6 +17,7 @@ set -euo pipefail
 TAG="${1:?usage: sign_mac_release.sh <tag, e.g. v0.2.0>}"
 V="${TAG#v}"
 REPO="${REPO:-beskvladimir-create/deskhatch}"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IDENTITY="${SIGN_IDENTITY:-}"
 if [ -z "$IDENTITY" ]; then
   IDENTITY="$(security find-identity -v -p codesigning |
@@ -84,7 +85,6 @@ gh release upload "$TAG" --repo "$REPO" --clobber "${ASSETS[@]}" SHA256SUMS.txt
 
 # The npm package carries the final checksums, so `npx deskhatch` verifies the runtime against
 # what was published here even if the release page were changed later. Publish npm after this.
-REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 node -e '
   const fs = require("fs");
   const [sums, version, out] = process.argv.slice(1);
