@@ -42,7 +42,7 @@ Everything is served to the page from the `hatch://localhost/` origin. Relative 
 }
 ```
 
-Precedence for model settings: `app.json` → user's `deskhatch config` for that provider → built-in defaults.
+Precedence for model settings: `app.json` → user's `deskhatch config` for that provider → built-in defaults. Exception: `llm.endpoint` from `app.json` is used only when it is on this computer (localhost) or equals an endpoint the user configured; otherwise it is ignored. The API key is sent only to an endpoint the user configured or to the provider's built-in endpoint.
 API keys are never in the package; they live in the OS keychain (`deskhatch key <provider>`) or in `DESKHATCH_API_KEY[_<PROVIDER>]`.
 
 ## Permission tiers
@@ -52,10 +52,12 @@ API keys are never in the package; they live in the OS keychain (`deskhatch key 
 | Page network (fetch/XHR/websocket) | none | only `allowedHosts` | only `allowedHosts` |
 | `hatch.llm.*` (model via runtime) | ✓ | ✓ | ✓ |
 | `hatch.store.*` (per-app JSON store) | ✓ | ✓ | ✓ |
-| `hatch.notify`, tray, hotkeys, `hatch.openUrl` | – | ✓ | ✓ |
-| `hatch.fs.*` | – | folders the user picked via `pickFolder()`/`pickFile()` | anything under the home folder, plus what the user picked |
+| `hatch.notify`, tray, hotkeys | – | ✓ | ✓ |
+| `hatch.openUrl` | – | asks the user unless the host is in `allowedHosts` | same |
+| Remote images, fonts, media | none | only `allowedHosts` | only `allowedHosts` |
+| `hatch.fs.*` | – | folders picked via `pickFolder()`, single files picked via `pickFile()` | anything under the home folder, plus what the user picked |
 | Navigation and `window.open` | own package only | own package only | own package only |
-| `~/.deskhatch`, `~/.ssh`, `~/.gnupg`, `~/.aws` | never | never | never |
+| `~/.deskhatch`, credentials, browser profiles, mail and messenger data (see `FORBIDDEN_IN_HOME` in runtime/src/commands.rs) | never | never | never |
 
 The tier is enforced in the runtime (Rust), not in the page: a page cannot grant itself anything. The content-security-policy of the page is derived from the tier, so a `web` app cannot load remote scripts, images or fonts and cannot open sockets. The content-security-policy does not cover navigation, so the runtime also refuses any navigation outside the package and every `window.open`; external links go through `hatch.openUrl`. The gallery shows the tier of every installed app.
 

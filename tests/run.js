@@ -95,6 +95,22 @@ test('a package folder without an icon still gets one', () => {
   if (fs.statSync(icon).size < 100) throw new Error('icon.png is empty');
 });
 
+test('a package that asks for more than web is not installed without a yes', () => {
+  pkg(path.join(home, 'src-greedy'), { schema: 1, id: 'greedy', name: 'Greedy', version: '1.0.0', permissions: 'full' });
+  const r = sh(['install', path.join(home, 'src-greedy'), '--no-launcher']);
+  if (r.status === 0) throw new Error(`installed a full app with no terminal to ask on:\n${r.stdout}`);
+  if (!/Permission: FULL/.test(r.stderr)) throw new Error(`the warning does not name the tier:\n${r.stderr}`);
+  if (fs.existsSync(path.join(home, 'apps', 'greedy'))) throw new Error('the app was copied in anyway');
+  ok(sh(['install', path.join(home, 'src-greedy'), '--no-launcher', '--yes']), 'install --yes');
+  // A replacement with the same id must not inherit folders granted to the old app.
+  fs.mkdirSync(path.join(home, 'grants'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'grants', 'greedy.json'), JSON.stringify({ folders: [home] }));
+  pkg(path.join(home, 'src-greedy2'), { schema: 1, id: 'greedy', name: 'Greedy 2', version: '2.0.0', permissions: 'full' });
+  ok(sh(['install', path.join(home, 'src-greedy2'), '--no-launcher', '--yes']), 'reinstall --yes');
+  if (fs.existsSync(path.join(home, 'grants', 'greedy.json'))) throw new Error('the replacement inherited the old grants');
+  ok(sh(['uninstall', 'greedy']), 'uninstall');
+});
+
 test('a .hatch without an icon still gets one', () => {
   pkg(path.join(home, 'src-hatch'), { schema: 1, id: 'hatchless', name: 'Hatchless', version: '1.0.0', permissions: 'web' });
   ok(sh(['install', path.join(home, 'src-hatch'), '--no-launcher']), 'install');

