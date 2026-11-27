@@ -357,6 +357,42 @@ test('relink keeps each launcher in the mode it had', () => {
   }
 });
 
+function launcherOf(id, name) {
+  return MAC
+    ? path.join(home, 'Applications', `${name}.app`)
+    : path.join(home, '.local', 'share', 'applications', `deskhatch-${id}.desktop`);
+}
+
+test('uninstall takes the launcher with it, even one whose manifest no longer parses', () => {
+  pkg(path.join(home, 'src-stale'), { schema: 1, id: 'staleapp', name: 'Stale App', version: '1.0.0', permissions: 'web' });
+  ok(sh(['install', path.join(home, 'src-stale')]), 'install');
+  const launcher = launcherOf('staleapp', 'Stale App');
+  if (!fs.existsSync(launcher)) throw new Error(`no launcher was created: ${launcher}`);
+  fs.writeFileSync(path.join(home, 'apps', 'staleapp', 'app.json'), '{ this is not json');
+  ok(sh(['uninstall', 'staleapp']), 'uninstall');
+  if (fs.existsSync(launcher)) throw new Error(`the launcher outlived the app: ${launcher}`);
+  if (!MAC && fs.existsSync(path.join(home, '.local', 'share', 'icons', 'hicolor', '512x512', 'apps', 'deskhatch-staleapp.png'))) {
+    throw new Error('the icon outlived the app');
+  }
+});
+
+test('relink drops the launcher of an app that is gone and keeps the rest', () => {
+  pkg(path.join(home, 'src-ghost'), { schema: 1, id: 'ghostapp', name: 'Ghost App', version: '1.0.0', permissions: 'web' });
+  pkg(path.join(home, 'src-live'), { schema: 1, id: 'liveapp', name: 'Live App', version: '1.0.0', permissions: 'web' });
+  ok(sh(['install', path.join(home, 'src-ghost')]), 'install the one to delete');
+  ok(sh(['install', path.join(home, 'src-live')]), 'install the one to keep');
+  const ghost = launcherOf('ghostapp', 'Ghost App');
+  const live = launcherOf('liveapp', 'Live App');
+  // The package removed by hand, the way an older version of deskhatch or a half-finished
+  // uninstall left things: the launcher stays behind and starts nothing.
+  fs.rmSync(path.join(home, 'apps', 'ghostapp'), { recursive: true, force: true });
+  const out = ok(sh(['relink']), 'relink');
+  if (fs.existsSync(ghost)) throw new Error(`relink kept a launcher with no app: ${ghost}`);
+  if (!/removed, no such app/.test(out)) throw new Error(`relink did not report the removal:\n${out}`);
+  if (!fs.existsSync(live)) throw new Error(`relink removed the launcher of an installed app: ${live}`);
+  sh(['uninstall', 'liveapp']);
+});
+
 test('--name renames a package that brought its own manifest', () => {
   pkg(path.join(home, 'src-named'), { schema: 1, id: 'namedapp', name: 'Original', version: '1.0.0', permissions: 'web' });
   ok(sh(['install', path.join(home, 'src-named'), '--name', 'Renamed', '--no-launcher']), 'install --name');

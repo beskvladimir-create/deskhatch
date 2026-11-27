@@ -87,7 +87,7 @@ its window, dock icon and title are its own. `--standalone` copies the runtime i
 and the right name in every one of those places. The copy is re-signed ad-hoc locally and is
 refreshed by `npx deskhatch update`, which rebuilds every launcher.
 
-Or grab the runtime from [Releases](https://github.com/beskvladimir-create/deskhatch/releases) and drop `.hatch` files on it. Linux: the `npx` wrapper uses the AppImage (needs `libfuse2` on Ubuntu 22.04+; without it the AppImage self-extracts, slower); a `.deb` is in Releases too.
+Or grab the runtime from [Releases](https://github.com/beskvladimir-create/deskhatch/releases) and drop `.hatch` files on it. Linux: the `npx` wrapper uses the AppImage. With FUSE 2 present (`libfuse2`, `libfuse2t64` on Ubuntu 24.04) it mounts and starts fast; Ubuntu has not installed that library by default since 22.04, and without it the wrapper runs the AppImage self-extracting, which works but is slower. A `.deb` is in Releases too.
 
 ### Pick a model
 
@@ -170,7 +170,7 @@ DESKHATCH_BIN=$PWD/runtime/target/debug/deskhatch DESKHATCH_GUI=1 node tests/run
 
 An app package is someone else's code. deskhatch treats every package, `.hatch` file, folder or bare HTML page as untrusted. What the runtime does not defend against, and why the tiers are not an operating system sandbox, is in [SECURITY.md](SECURITY.md).
 
-- **Each app is isolated.** Every app runs in its own process with an origin of its own (`hatch://app-<id>-<nonce>/`, the nonce renewed on every install), so apps never share localStorage, IndexedDB or caches. A page cannot navigate out of its package, open windows or frames to other sites, or use WebRTC.
+- **Each app is isolated.** Every app runs in its own process with an origin of its own (`hatch://app-<id>-<nonce>/`, the nonce drawn at install and renewed whenever the app is uninstalled or replaced by a package from somewhere else), so apps never share localStorage, IndexedDB or caches. A page cannot navigate out of its package, open windows or frames to other sites, or use WebRTC.
 - **Network.** A `web` app has no network at all: no fetch, sockets, remote scripts, images or fonts, and resource hints (preconnect, dns-prefetch, prefetch) are stripped. `desktop` and `full` reach only the hosts in `allowedHosts`. On Linux and on macOS 14 and later every window's connections also go through a local proxy that opens tunnels only to those hosts, never to this computer or the local network. On older macOS that layer is not available; the content-security-policy, the navigation lock and the hint stripping still apply.
 - **The model and your key.** `hatch.llm.chat` goes to the provider and endpoint *you* configured. An app may pick a provider only among those you set up, and an `endpoint` in `app.json` is used only if it equals one you configured. Your key never goes anywhere else, redirects are not followed, and error bodies from the endpoint are not passed to the page.
 - **Installing asks first.** A package that wants `desktop` or `full`, global hotkeys, a model endpoint, or that would replace an installed app from another source, shows what it asks for and waits for your yes (dialog in the GUI, prompt in the terminal, `--yes` for scripts; without a terminal the answer is no). A bare HTML page never replaces an installed app; it gets a new id. Replacing an app deletes the old app's data and folder access. `deskhatch dev` asks the same way and keeps its data apart from installed apps.

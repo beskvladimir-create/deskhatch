@@ -20,6 +20,19 @@ pub fn root() -> PathBuf {
         .join(".deskhatch")
 }
 
+/// The store a plain install uses, whatever DESKHATCH_HOME says right now.
+pub fn default_root() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".deskhatch")
+}
+
+/// True when this process works on the default store. A DESKHATCH_HOME pointing somewhere else
+/// (a test run, a second install) must not clean up launchers it did not create.
+pub fn is_default_root() -> bool {
+    root() == default_root()
+}
+
 pub fn apps_dir() -> PathBuf {
     root().join("apps")
 }

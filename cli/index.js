@@ -152,8 +152,25 @@ function usage() {
   npx deskhatch config [--provider ollama|openai|...] [--model M] [--endpoint URL]
   npx deskhatch key <provider>      store an API key in the OS keychain (read from stdin)
   npx deskhatch models | doctor
-  npx deskhatch update              re-download the runtime and re-create the launchers
+  npx deskhatch update              re-download the runtime, re-create the launchers, drop stale ones
 `);
+}
+
+// An AppImage mounts itself, which needs both the /dev/fuse device and FUSE 2 itself
+// (libfuse.so.2). Ubuntu has not installed that library by default since 22.04, and without it
+// the AppImage exits with "libfuse.so.2: cannot open shared object file". When either piece is
+// missing, let it unpack itself instead: slower to start, but it starts.
+function hasFuse2() {
+  if (!fs.existsSync('/dev/fuse')) return false;
+  for (const ldconfig of ['/sbin/ldconfig', 'ldconfig']) {
+    const r = spawnSync(ldconfig, ['-p'], { encoding: 'utf8' });
+    if (r.status === 0 && r.stdout) return /libfuse\.so\.2(\s|$)/m.test(r.stdout);
+  }
+  const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
+  return [
+    `/lib/${arch}-linux-gnu`, `/usr/lib/${arch}-linux-gnu`,
+    '/lib', '/usr/lib', '/lib64', '/usr/lib64', '/usr/local/lib',
+  ].some((d) => fs.existsSync(path.join(d, 'libfuse.so.2')));
 }
 
 async function main() {
@@ -181,8 +198,8 @@ async function main() {
   }
 
   const env = { ...process.env };
-  if (process.platform === 'linux' && !fs.existsSync('/dev/fuse') && !env.APPIMAGE_EXTRACT_AND_RUN) {
-    env.APPIMAGE_EXTRACT_AND_RUN = '1'; // no FUSE here (containers, some distros): let the AppImage self-extract
+  if (process.platform === 'linux' && !env.APPIMAGE_EXTRACT_AND_RUN && !hasFuse2()) {
+    env.APPIMAGE_EXTRACT_AND_RUN = '1'; // no FUSE here: let the AppImage self-extract instead
   }
   if (detach) {
     const child = spawn(bin, fwd, { detached: true, stdio: 'ignore', env });

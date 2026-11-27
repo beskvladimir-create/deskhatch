@@ -54,8 +54,10 @@ pub fn forget_app_state(id: &str) {
     let _ = fs::remove_file(source_mark(id));
 }
 
-/// The origin host of an app's pages, `app-<id>-<nonce>`. The nonce is new for every install,
-/// so a later app with the same id never sees the web data of an earlier one.
+/// The origin host of an app's pages, `app-<id>-<nonce>`. The nonce is drawn on first install
+/// and kept with the app's state, so it is new again whenever the app is uninstalled or replaced
+/// by a package from somewhere else: a later app with the same id never sees the web data of an
+/// earlier one. Reinstalling the same app from the same source keeps both nonce and data.
 pub fn origin_host(id: &str) -> String {
     let f = store::root().join("origins").join(id);
     let nonce = fs::read_to_string(&f).ok().map(|s| s.trim().to_string()).filter(|s| {
@@ -138,7 +140,7 @@ pub fn install_warning(m: &Manifest, src: &Path) -> Option<String> {
     let mut lines = vec![];
     match m.permissions {
         Tier::Full => lines.push(
-            "Permission: FULL. It can read and change files in your home folder, so it can also get programs run on your behalf. Give this only to apps you wrote or fully trust.".to_string(),
+            "Permission: FULL. It reads and changes files in your home folder, apart from credentials, browser, mail and messenger data, and apart from the files that run code at login. It can still change a project's files that another program runs later. Give this only to apps you wrote or fully trust.".to_string(),
         ),
         Tier::Desktop => lines.push(
             "Permission: DESKTOP. Notifications, tray, hotkeys, and the folders you pick for it.".to_string(),
@@ -168,7 +170,7 @@ pub fn install_warning(m: &Manifest, src: &Path) -> Option<String> {
         return None;
     }
     Some(format!(
-        "Install \"{}\" {}?\n\n{}\n\nOnly install apps from people you trust. You can read its index.html first.",
+        "Install \"{}\" {}?\n\n{}\n\nOnly install apps from people you trust. You can read the package's HTML first, it is plain text.",
         clean_name(&m.name),
         clean_name(&m.version),
         lines.join("\n")
@@ -347,19 +349,9 @@ pub fn list() -> Vec<Installed> {
 
 pub fn uninstall(id: &str) -> Result<()> {
     let dir = store::app_dir(id);
-    if let Ok(m) = Manifest::load(&dir) {
-        if let Some(l) = launcher_path(&m) {
-            if l.is_dir() {
-                let _ = fs::remove_dir_all(&l);
-            } else {
-                let _ = fs::remove_file(&l);
-            }
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let _ = fs::remove_file(linux_icon_path(&m.id));
-        }
-    }
+    // Launchers go by id, not through the manifest: an app whose app.json no longer parses must
+    // still lose its launcher, and a renamed app has one under the name it carried before.
+    remove_launchers(id);
     if dir.exists() {
         fs::remove_dir_all(&dir)?;
     }
@@ -440,6 +432,155 @@ pub fn launcher_path(m: &Manifest) -> Option<PathBuf> {
     }
 }
 
+/// Every launcher that belongs to this id, found by the app it starts rather than by the app's
+/// current name: a renamed app leaves a bundle under its old name, and a .desktop file outlives
+/// the package it was written for.
+pub fn launchers_of(id: &str) -> Vec<PathBuf> {
+    let mut out = vec![];
+    #[cfg(target_os = "macos")]
+    if let Some(apps) = dirs::home_dir().map(|h| h.join("Applications")) {
+        if let Ok(rd) = fs::read_dir(&apps) {
+            for e in rd.flatten() {
+                let p = e.path();
+                let is_bundle = p.extension().map(|x| x == "app").unwrap_or(false);
+                if is_bundle && bundle_owner(&p).as_deref() == Some(id) {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(apps) = dirs::data_local_dir().map(|d| d.join("applications")) {
+        let f = apps.join(format!("deskhatch-{id}.desktop"));
+        if f.exists() {
+            out.push(f);
+        }
+    }
+    let _ = id;
+    out
+}
+
+/// Remove the launchers of an app, and on Linux the icon they pointed at. Returns what was
+/// removed, so `uninstall` and `relink` can say so.
+pub fn remove_launchers(id: &str) -> Vec<PathBuf> {
+    let found = launchers_of(id);
+    for p in &found {
+        if p.is_dir() {
+            let _ = fs::remove_dir_all(p);
+        } else {
+            let _ = fs::remove_file(p);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = fs::remove_file(linux_icon_path(id));
+        if !found.is_empty() {
+            refresh_desktop_db();
+        }
+    }
+    found
+}
+
+/// Launchers whose app is not installed any more: left by a package deleted by hand, by an
+/// uninstall that could not finish, or by a version of deskhatch that did not clean up after
+/// itself. `relink` removes them, so an update also tidies the menu.
+pub fn prune_launchers() -> Vec<PathBuf> {
+    let installed: Vec<String> = list().into_iter().map(|a| a.id).collect();
+    let mut gone: Vec<PathBuf> = vec![];
+    #[cfg(target_os = "macos")]
+    if let Some(apps) = dirs::home_dir().map(|h| h.join("Applications")) {
+        if let Ok(rd) = fs::read_dir(&apps) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if !p.extension().map(|x| x == "app").unwrap_or(false) {
+                    continue;
+                }
+                // Only bundles that name a deskhatch app are ours to remove; deskhatch's own
+                // bundle and everything else in ~/Applications carry no app id and are left alone.
+                let Some(owner) = bundle_owner(&p) else { continue };
+                if installed.iter().any(|i| *i == owner) {
+                    continue;
+                }
+                let mine = xml_escape(&store::root().to_string_lossy());
+                if !launcher_is_ours(bundle_store(&p).as_deref(), &mine) {
+                    continue;
+                }
+                let _ = fs::remove_dir_all(&p);
+                gone.push(p);
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(apps) = dirs::data_local_dir().map(|d| d.join("applications")) {
+            if let Ok(rd) = fs::read_dir(&apps) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    let Some(name) = p.file_name().and_then(|n| n.to_str()) else { continue };
+                    let Some(id) = name
+                        .strip_prefix("deskhatch-")
+                        .and_then(|n| n.strip_suffix(".desktop"))
+                    else {
+                        continue;
+                    };
+                    if installed.iter().any(|i| i == id) {
+                        continue;
+                    }
+                    let mine = desktop_escape(&store::root().to_string_lossy());
+                    if !launcher_is_ours(desktop_store(&p).as_deref(), &mine) {
+                        continue;
+                    }
+                    let _ = fs::remove_file(&p);
+                    let _ = fs::remove_file(linux_icon_path(id));
+                    gone.push(p);
+                }
+            }
+        }
+        if !gone.is_empty() {
+            refresh_desktop_db();
+        }
+    }
+    let _ = &installed;
+    gone
+}
+
+/// Whether a launcher belongs to the store this process works on. Launchers carry the store
+/// they were made for; one without that stamp was made before 0.2.5, and only a process on the
+/// default store may remove it, so a test run or a second install never sweeps the real one.
+fn launcher_is_ours(stamp: Option<&str>, mine: &str) -> bool {
+    match stamp {
+        Some(p) => p == mine,
+        None => store::is_default_root(),
+    }
+}
+
+/// The store a macOS launcher was created for.
+#[cfg(target_os = "macos")]
+fn bundle_store(bundle: &Path) -> Option<String> {
+    let plist = fs::read_to_string(bundle.join("Contents").join("Info.plist")).ok()?;
+    let key = "<key>DeskhatchStore</key><string>";
+    let rest = &plist[plist.find(key)? + key.len()..];
+    Some(rest[..rest.find("</string>")?].to_string())
+}
+
+/// The store a .desktop entry was created for.
+#[cfg(target_os = "linux")]
+fn desktop_store(entry: &Path) -> Option<String> {
+    let text = fs::read_to_string(entry).ok()?;
+    text.lines()
+        .find_map(|l| l.strip_prefix("X-Deskhatch-Store=").map(|s| s.to_string()))
+}
+
+/// Let the desktop environment notice that an entry appeared or disappeared.
+#[cfg(target_os = "linux")]
+fn refresh_desktop_db() {
+    if let Some(apps) = dirs::data_local_dir().map(|d| d.join("applications")) {
+        let _ = std::process::Command::new("update-desktop-database")
+            .arg(apps)
+            .status();
+    }
+}
+
 /// The deskhatch app id a macOS bundle was made for, read from its Info.plist.
 #[allow(dead_code)]
 fn bundle_owner(bundle: &Path) -> Option<String> {
@@ -479,6 +620,7 @@ fn mac_plist(m: &Manifest, executable: &str) -> String {
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSUIElement</key><false/>
+  <key>DeskhatchStore</key><string>{store}</string>
 </dict>
 </plist>
 "#,
@@ -486,6 +628,7 @@ fn mac_plist(m: &Manifest, executable: &str) -> String {
         id = xml_escape(&m.id),
         version = xml_escape(&m.version),
         executable = executable,
+        store = xml_escape(&store::root().to_string_lossy()),
     )
 }
 
@@ -747,12 +890,13 @@ pub fn create_launcher(m: &Manifest) -> Result<PathBuf> {
             "application-x-executable".into()
         };
         let desktop = format!(
-            "[Desktop Entry]\nType=Application\nName={name}\nComment={comment}\nExec={exe} --app {id}\nIcon={icon}\nTerminal=false\nCategories=Utility;\nStartupWMClass=deskhatch-{id}\n",
+            "[Desktop Entry]\nType=Application\nName={name}\nComment={comment}\nExec={exe} --app {id}\nIcon={icon}\nTerminal=false\nCategories=Utility;\nStartupWMClass=deskhatch-{id}\nX-Deskhatch-Store={store}\n",
             name = desktop_escape(&m.name),
             comment = desktop_escape(&m.description.clone().unwrap_or_default()),
             exe = desktop_exec_quote(&exe.to_string_lossy()),
             id = m.id,
             icon = icon_field,
+            store = desktop_escape(&store::root().to_string_lossy()),
         );
         fs::write(&target, desktop)?;
         {

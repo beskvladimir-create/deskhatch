@@ -224,7 +224,7 @@ pub struct AppCtx {
 
 fn usage() -> ! {
     eprintln!(
-        "deskhatch {}\n\nUSAGE:\n  deskhatch                         open the gallery\n  deskhatch --app <id>              run an installed app\n  deskhatch --dev <dir>             run an app folder with live reload\n  deskhatch install <src> [--name N] [--no-launcher] [--standalone] [--run] [--yes]\n                                    src = folder with app.json | file.hatch | page.html\n                                    --yes: install without asking when the app wants more than the web tier\n  deskhatch new \"<prompt>\" [--name N] [--tier web|desktop|full] [--model M] [--run]\n  deskhatch list\n  deskhatch relink                  re-create every launcher (after a runtime update)\n  deskhatch uninstall <id>\n  deskhatch export <id> [--out <dir>]\n  deskhatch config [--provider P] [--model M] [--endpoint URL]\n  deskhatch key <provider>          read an API key from stdin and store it in the OS keychain\n  deskhatch models                  list models from the configured endpoint\n  deskhatch doctor                  print paths and configuration\n  deskhatch <file.hatch>            install and run a package",
+        "deskhatch {}\n\nUSAGE:\n  deskhatch                         open the gallery\n  deskhatch --app <id>              run an installed app\n  deskhatch --dev <dir>             run an app folder with live reload\n  deskhatch install <src> [--name N] [--no-launcher] [--standalone] [--run] [--yes]\n                                    src = folder with app.json | file.hatch | page.html\n                                    --yes: install without asking when the app wants more than the web tier\n  deskhatch new \"<prompt>\" [--name N] [--tier web|desktop|full] [--model M] [--run]\n  deskhatch list\n  deskhatch relink                  re-create every launcher, drop the ones whose app is gone\n  deskhatch uninstall <id>\n  deskhatch export <id> [--out <dir>]\n  deskhatch config [--provider P] [--model M] [--endpoint URL]\n  deskhatch key <provider>          read an API key from stdin and store it in the OS keychain\n  deskhatch models                  list models from the configured endpoint\n  deskhatch doctor                  print paths and configuration\n  deskhatch <file.hatch>            install and run a package",
         env!("CARGO_PKG_VERSION")
     );
     std::process::exit(2)
@@ -387,6 +387,9 @@ fn main() {
                     }
                     Err(e) => eprintln!("{}: {e}", a.id),
                 }
+            }
+            for p in packages::prune_launchers() {
+                println!("{:<24} {} (removed, no such app)", "-", p.display());
             }
         }
         Some("uninstall") => {
