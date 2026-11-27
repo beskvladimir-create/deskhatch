@@ -1,11 +1,11 @@
 {
-  "version": "0.2.4",
+  "version": "0.2.5",
   "files": {
-    "deskhatch-v0.2.4-darwin-arm64.tar.gz": "0dc298c912f1a28869011c93307808e0bf4b32f8da9bf8d60ceaf86590d82b36",
-    "deskhatch-v0.2.4-darwin-x64.tar.gz": "aba6fa96563294836cdb9ad7cede62843f85f3e9b6a061ae6091598eee5c0cb1",
-    "deskhatch-v0.2.4-linux-arm64.AppImage": "09623af7aea63d913381494630d957d437c3c3c81c7dcd4b730fbd916ad9401c",
-    "deskhatch-v0.2.4-linux-arm64.deb": "9412973919b9e1c4c395189899bc44b1b64c8c671a14e8411115e0d5bad2e064",
-    "deskhatch-v0.2.4-linux-x64.AppImage": "5c83dc573ba73de24126a524ec3ac1bbe08dc7e5ce7f416c3fe39483525813c2",
-    "deskhatch-v0.2.4-linux-x64.deb": "5f31ca2be1c47ac3bba0b75d9853df5aa90f9aff994a49723d45c7f50aac349f"
+    "deskhatch-v0.2.5-darwin-arm64.tar.gz": "310cffc8ad17d83af04c352eb628e139fd7a163878487e38e7cd1291d74efdb0",
+    "deskhatch-v0.2.5-darwin-x64.tar.gz": "f4bce67f2ec7319414adb0c9264e59c69c27c2907d520dfd5eb91f198a57228f",
+    "deskhatch-v0.2.5-linux-arm64.AppImage": "a0212299851362cfdcaba564cb64b06f3b3f5e9efd761fdc3301a92115bf9c46",
+    "deskhatch-v0.2.5-linux-arm64.deb": "53962a16ea2cd2d9020efc733731e9e7184a881600e05fed5dc1c3e9e3f1134b",
+    "deskhatch-v0.2.5-linux-x64.AppImage": "f5d12efb5506142685caa5a76e63699d0b584733336f4ebced11de0f30c49605",
+    "deskhatch-v0.2.5-linux-x64.deb": "be23e0c3c83ce66692245cc2fe157d2041fd6d64ed27a410cfe4b87a83d0a4ff"
   }
 }
