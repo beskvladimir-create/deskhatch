@@ -168,7 +168,7 @@ DESKHATCH_BIN=$PWD/runtime/target/debug/deskhatch DESKHATCH_GUI=1 node tests/run
 
 ## Security notes
 
-An app package is someone else's code. deskhatch treats every package, `.hatch` file, folder or bare HTML page as untrusted.
+An app package is someone else's code. deskhatch treats every package, `.hatch` file, folder or bare HTML page as untrusted. What the runtime does not defend against, and why the tiers are not an operating system sandbox, is in [SECURITY.md](SECURITY.md).
 
 - **Each app is isolated.** Every app runs in its own process with an origin of its own (`hatch://app-<id>-<nonce>/`, the nonce renewed on every install), so apps never share localStorage, IndexedDB or caches. A page cannot navigate out of its package, open windows or frames to other sites, or use WebRTC.
 - **Network.** A `web` app has no network at all: no fetch, sockets, remote scripts, images or fonts, and resource hints (preconnect, dns-prefetch, prefetch) are stripped. `desktop` and `full` reach only the hosts in `allowedHosts`. On Linux and on macOS 14 and later every window's connections also go through a local proxy that opens tunnels only to those hosts, never to this computer or the local network. On older macOS that layer is not available; the content-security-policy, the navigation lock and the hint stripping still apply.
@@ -180,7 +180,7 @@ An app package is someone else's code. deskhatch treats every package, `.hatch` 
 - **The runtime download is verified.** `npx deskhatch` checks the runtime's SHA-256 when it downloads it, against the list shipped in the npm package (or the release's SHA256SUMS.txt).
 - The macOS runtime in Releases is signed with a Developer ID certificate and notarised by Apple: `spctl -a -t exec Deskhatch.app` reports `Notarized Developer ID`. Thin launchers are tiny local bundles pointing at it; a `--standalone` bundle is a local copy signed ad-hoc on your machine.
 
-Found something? Please report it privately through GitHub's "Report a vulnerability" on this repository.
+Found something? Please report it privately through GitHub's "Report a vulnerability" on this repository, as [SECURITY.md](SECURITY.md#reporting-a-vulnerability) describes.
 
 ## License
 
