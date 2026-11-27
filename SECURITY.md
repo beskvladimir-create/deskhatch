@@ -4,8 +4,10 @@ deskhatch turns someone else's HTML into a desktop app. Every package, `.hatch` 
 and bare page is treated as untrusted code. This document states what the runtime enforces,
 what it does not, and how to report a problem.
 
-Current release: 0.2.4. Fixes go into the next release from `main`; older versions are not
-patched. Versions 0.2.3 and earlier are deprecated on npm.
+The supported version is the
+[latest release](https://github.com/beskvladimir-create/deskhatch/releases/latest). Fixes go
+into the next release from `main`; older versions are not patched. Versions 0.2.3 and earlier
+are deprecated on npm.
 
 ## Threat model
 

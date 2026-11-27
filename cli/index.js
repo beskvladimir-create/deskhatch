@@ -156,21 +156,27 @@ function usage() {
 `);
 }
 
-// An AppImage mounts itself, which needs both the /dev/fuse device and FUSE 2 itself
-// (libfuse.so.2). Ubuntu has not installed that library by default since 22.04, and without it
-// the AppImage exits with "libfuse.so.2: cannot open shared object file". When either piece is
-// missing, let it unpack itself instead: slower to start, but it starts.
-function hasFuse2() {
-  if (!fs.existsSync('/dev/fuse')) return false;
-  for (const ldconfig of ['/sbin/ldconfig', 'ldconfig']) {
-    const r = spawnSync(ldconfig, ['-p'], { encoding: 'utf8' });
-    if (r.status === 0 && r.stdout) return /libfuse\.so\.2(\s|$)/m.test(r.stdout);
+// An AppImage mounts itself through FUSE. The runtime inside ours is AppImage type2-runtime:
+// static, with libfuse and squashfuse built in, so no system libfuse.so.2 is needed (that is
+// what older AppImages link against). What it does need is the /dev/fuse device and a
+// setuid-root fusermount on the PATH, which it looks up by the rule repeated here: a name of
+// "fusermount" plus digits, owned by root, setuid. Without either piece the mount fails with
+// "Cannot mount AppImage", so let it unpack itself instead: slower to start, but it starts.
+function canMountFuse(io = fs, pathEnv = process.env.PATH || '') {
+  if (!io.existsSync('/dev/fuse')) return false;
+  for (const dir of pathEnv.split(':')) {
+    if (!dir) continue;
+    let names;
+    try { names = io.readdirSync(dir); } catch (_) { continue; } // unreadable PATH entry
+    for (const name of names) {
+      if (!/^fusermount[0-9]*$/.test(name)) continue;
+      try {
+        const st = io.statSync(path.join(dir, name));
+        if (st.uid === 0 && (st.mode & 0o4000) !== 0) return true;
+      } catch (_) { /* a dangling link or a race: keep looking */ }
+    }
   }
-  const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
-  return [
-    `/lib/${arch}-linux-gnu`, `/usr/lib/${arch}-linux-gnu`,
-    '/lib', '/usr/lib', '/lib64', '/usr/lib64', '/usr/local/lib',
-  ].some((d) => fs.existsSync(path.join(d, 'libfuse.so.2')));
+  return false;
 }
 
 async function main() {
@@ -198,7 +204,7 @@ async function main() {
   }
 
   const env = { ...process.env };
-  if (process.platform === 'linux' && !env.APPIMAGE_EXTRACT_AND_RUN && !hasFuse2()) {
+  if (process.platform === 'linux' && !env.APPIMAGE_EXTRACT_AND_RUN && !canMountFuse()) {
     env.APPIMAGE_EXTRACT_AND_RUN = '1'; // no FUSE here: let the AppImage self-extract instead
   }
   if (detach) {
@@ -210,4 +216,6 @@ async function main() {
   child.on('exit', (code) => process.exit(code ?? 0));
 }
 
-main().catch((e) => fail(e.message));
+if (require.main === module) main().catch((e) => fail(e.message));
+
+module.exports = { canMountFuse };

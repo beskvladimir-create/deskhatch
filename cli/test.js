@@ -5,9 +5,40 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
+// The AppImage runtime carries FUSE inside, so the wrapper must not fall back to the slow
+// self-extracting start just because the system has no libfuse.so.2. It mounts wherever
+// /dev/fuse and a setuid-root fusermount are there, and only then may the fallback kick in.
+{
+  const { canMountFuse } = require('./index.js');
+  const setuidRoot = { uid: 0, mode: 0o104755 };
+  const world = (dev, dirs, stats) => ({
+    existsSync: (p) => dev && p === '/dev/fuse',
+    readdirSync: (d) => { if (!(d in dirs)) throw new Error('ENOENT'); return dirs[d]; },
+    statSync: (p) => { if (!(p in stats)) throw new Error('ENOENT'); return stats[p]; },
+  });
+  const cases = [
+    ['a desktop with fusermount3 and no libfuse2 mounts', true, true,
+      { '/usr/bin': ['ls', 'fusermount3'] }, { '/usr/bin/fusermount3': setuidRoot }],
+    ['an older desktop with fusermount mounts', true, true,
+      { '/usr/bin': ['fusermount'] }, { '/usr/bin/fusermount': setuidRoot }],
+    ['an unreadable PATH entry does not hide the helper behind it', true, true,
+      { '/usr/bin': ['fusermount3'] }, { '/usr/bin/fusermount3': setuidRoot }, '/nope:/usr/bin'],
+    ['no /dev/fuse: unpack instead', false, false,
+      { '/usr/bin': ['fusermount3'] }, { '/usr/bin/fusermount3': setuidRoot }],
+    ['no helper on the PATH: unpack instead', true, false, { '/usr/bin': ['ls'] }, {}],
+    ['a helper that is not setuid root: unpack instead', true, false,
+      { '/usr/bin': ['fusermount3'] }, { '/usr/bin/fusermount3': { uid: 0, mode: 0o100755 } }],
+    ['a look-alike name is not a helper', true, false,
+      { '/usr/bin': ['fusermount3-wrapper'] }, { '/usr/bin/fusermount3-wrapper': setuidRoot }],
+  ];
+  for (const [what, dev, want, dirs, stats, pathEnv = '/usr/bin'] of cases) {
+    if (canMountFuse(world(dev, dirs, stats), pathEnv) !== want) throw new Error(`FUSE check: ${what}`);
+  }
+}
+
 const bin = process.env.DESKHATCH_BIN;
 if (!bin || !fs.existsSync(bin)) {
-  console.log('skip: set DESKHATCH_BIN to a built runtime to run the CLI test');
+  console.log('skip: set DESKHATCH_BIN to a built runtime to run the CLI test (FUSE check ran)');
   process.exit(0);
 }
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dh-'));

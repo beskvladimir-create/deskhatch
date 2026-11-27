@@ -87,7 +87,7 @@ its window, dock icon and title are its own. `--standalone` copies the runtime i
 and the right name in every one of those places. The copy is re-signed ad-hoc locally and is
 refreshed by `npx deskhatch update`, which rebuilds every launcher.
 
-Or grab the runtime from [Releases](https://github.com/beskvladimir-create/deskhatch/releases) and drop `.hatch` files on it. Linux: the `npx` wrapper uses the AppImage. With FUSE 2 present (`libfuse2`, `libfuse2t64` on Ubuntu 24.04) it mounts and starts fast; Ubuntu has not installed that library by default since 22.04, and without it the wrapper runs the AppImage self-extracting, which works but is slower. A `.deb` is in Releases too.
+Or grab the runtime from [Releases](https://github.com/beskvladimir-create/deskhatch/releases) and drop `.hatch` files on it. Linux: the `npx` wrapper uses the AppImage. The AppImage runtime is static and carries FUSE inside, so no `libfuse2` package is needed; it mounts itself and starts fast wherever `/dev/fuse` and a setuid `fusermount` are present, which is an ordinary desktop. Where they are not, a container for instance, the wrapper runs the AppImage self-extracting, which works but is slower. A `.deb` is in Releases too.
 
 ### Pick a model
 
